@@ -1,31 +1,30 @@
 # FFmpeg Forge
 
-Erster Prototyp fuer eine moderne All-in-one GUI rund um FFmpeg, jetzt mit Electron-Desktop-Huelle fuer Windows.
+Early prototype for a focused all-in-one desktop GUI around FFmpeg, currently packaged with Electron for Windows.
 
-## Entwicklung
+## Development
 
 - `npm install`
-- `npm run dev` fuer die Browser-Ansicht
-- `npm run start:desktop` fuer die Desktop-App lokal
+- `npm run dev` for the browser build
+- `npm run start:desktop` to launch the desktop app locally
 
-## EXE bauen
+## Build EXE
 
 - `npm run build:desktop`
-- Das fertige portable EXE liegt danach in `release/`
+- The portable EXE is written to `release/`
 
-## Zielbild
+## Current Features
 
-Die App soll typische Media-Workflows unter einer Oberflaeche vereinen:
+- Desktop app shell with Electron
+- Focused English UI instead of a landing-page style layout
+- Working `Lossless Cut` workflow
+- File picker and output picker
+- `ffprobe` analysis for loaded media files
+- Direct `ffmpeg` execution from the UI
 
-- Video-, Audio- und Bild-Konvertierung
-- Lossless-Cut per `-c copy`, wenn technisch moeglich
-- Stapelverarbeitung mit Presets und Queue
-- FFprobe-Analyse fuer Streams, Metadaten und Keyframes
-- Transparente FFmpeg-Command-Vorschau statt Black Box
+## Planned Next Steps
 
-## Naechste sinnvolle Schritte
-
-1. FFmpeg/ffprobe-Binaries einbinden
-2. Dateiauswahl und Job-Erstellung an Electron anbinden
-3. Timeline-Editor fuer In/Out und Keyframe-Snapping bauen
-4. Queue-State persistent machen
+1. Bundle `ffmpeg` and `ffprobe` with the app so it runs on machines without a local install
+2. Add real video preview and frame scrubbing
+3. Add keyframe snapping for cleaner lossless cuts
+4. Implement the remaining modules such as Convert, Audio, Frames, and Batch

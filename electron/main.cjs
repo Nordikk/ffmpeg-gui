@@ -73,15 +73,15 @@ function formatOutputPath(inputPath, extension) {
 
 ipcMain.handle('desktop:open-file', async () => {
   const result = await dialog.showOpenDialog({
-    title: 'Quelldatei waehlen',
+    title: 'Select source file',
     properties: ['openFile'],
     filters: [
       {
-        name: 'Media',
+        name: 'Media files',
         extensions: ['mp4', 'mkv', 'mov', 'avi', 'mp3', 'wav', 'm4a', 'flac', 'webm']
       },
       {
-        name: 'Alle Dateien',
+        name: 'All files',
         extensions: ['*']
       }
     ]
@@ -96,11 +96,11 @@ ipcMain.handle('desktop:open-file', async () => {
 
 ipcMain.handle('desktop:save-file', async (_event, sourcePath, extension) => {
   const result = await dialog.showSaveDialog({
-    title: 'Ausgabedatei waehlen',
+    title: 'Select output file',
     defaultPath: formatOutputPath(sourcePath, extension),
     filters: [
       {
-        name: extension.toUpperCase(),
+        name: `${extension.toUpperCase()} file`,
         extensions: [extension]
       }
     ]
