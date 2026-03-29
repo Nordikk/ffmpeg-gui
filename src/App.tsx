@@ -410,12 +410,7 @@ function App() {
             return;
           }
 
-          if (activeTool === 'smart-convert') {
-            void loadConvertFile(firstPath);
-            return;
-          }
-
-          void loadLosslessFile(firstPath);
+          handleDroppedPath(firstPath);
         }
       });
     }
@@ -425,6 +420,45 @@ function App() {
     return () => {
       setIsDropTargetActive(false);
       unlisten?.();
+    };
+  }, [activeTool, convertContainer]);
+
+  useEffect(() => {
+    function handleDragOver(event: DragEvent) {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+      setIsDropTargetActive(true);
+    }
+
+    function handleDragLeave(event: DragEvent) {
+      if (event.relatedTarget === null) {
+        setIsDropTargetActive(false);
+      }
+    }
+
+    function handleDrop(event: DragEvent) {
+      event.preventDefault();
+      setIsDropTargetActive(false);
+
+      const droppedFiles = Array.from(event.dataTransfer?.files ?? []);
+      const firstFile = droppedFiles[0] as File & { path?: string };
+      const droppedPath = firstFile?.path;
+
+      if (droppedPath) {
+        handleDroppedPath(droppedPath);
+      }
+    }
+
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('drop', handleDrop);
+    window.addEventListener('dragleave', handleDragLeave);
+
+    return () => {
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('drop', handleDrop);
+      window.removeEventListener('dragleave', handleDragLeave);
     };
   }, [activeTool, convertContainer]);
 
@@ -456,6 +490,19 @@ function App() {
           : job
       )
     );
+  }
+
+  function handleDroppedPath(filePath: string) {
+    if (!filePath) {
+      return;
+    }
+
+    if (activeTool === 'smart-convert') {
+      void loadConvertFile(filePath);
+      return;
+    }
+
+    void loadLosslessFile(filePath);
   }
 
   async function loadLosslessFile(selectedPath: string) {
