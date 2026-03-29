@@ -1,7 +1,6 @@
-
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
-import { convertPresets, presets, queueJobs, tools } from './data/appData';
+import { convertPresets, presets, tools } from './data/appData';
 
 type ToolId = (typeof tools)[number]['id'];
 
@@ -26,23 +25,23 @@ type ProbeResult = {
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
   'lossless-cut': {
     title: 'Lossless Cut',
-    description: 'Load a file, inspect it with ffprobe, drag the selected range on the timeline, and run ffmpeg directly.'
+    description: 'Trim a source file with preview and stream copy options.'
   },
   'smart-convert': {
     title: 'Convert',
-    description: 'Convert media with built-in presets that avoid assuming GPL-only or nonfree FFmpeg builds.'
+    description: 'Convert media with conservative FFmpeg defaults.'
   },
   'audio-lab': {
     title: 'Audio',
-    description: 'Audio extraction, transcoding, and cleanup tools will live here.'
+    description: 'Audio tools are not implemented yet.'
   },
   'image-sequence': {
     title: 'Frames',
-    description: 'Frame export, thumbnails, and image sequence tools will live here.'
+    description: 'Frame export tools are not implemented yet.'
   },
   'batch-pipeline': {
     title: 'Batch',
-    description: 'Reusable queues and multi-file processing workflows will live here.'
+    description: 'Batch processing is not implemented yet.'
   }
 };
 
@@ -120,7 +119,7 @@ function buildLosslessCommandPreview(
   audioCodec: string
 ) {
   if (!sourcePath || !outputPath) {
-    return 'ffmpeg -ss 00:00:00 -to 00:00:00 -i input.mp4 -c:v copy -c:a copy output.mp4';
+    return 'ffmpeg -y -ss 00:00:00 -to 00:00:00 -i "input.mp4" -c:v copy -c:a copy "output.mp4"';
   }
 
   return `ffmpeg -y -ss ${start} -to ${end} -i "${sourcePath}" -c:v ${videoCodec} -c:a ${audioCodec} "${outputPath}"`;
@@ -135,7 +134,7 @@ function buildConvertCommandPreview(
   audioBitrate: string
 ) {
   if (!sourcePath || !outputPath) {
-    return 'ffmpeg -i input.mov -c:v mpeg4 -b:v 5M -c:a aac -b:a 192k output.mp4';
+    return 'ffmpeg -y -i "input.mov" -c:v mpeg4 -b:v 5M -c:a aac -b:a 192k "output.mp4"';
   }
 
   const parts = ['ffmpeg', '-y', '-i', `"${sourcePath}"`];
@@ -173,7 +172,7 @@ function App() {
   const [videoCodec, setVideoCodec] = useState('copy');
   const [audioCodec, setAudioCodec] = useState('copy');
   const [preset, setPreset] = useState('Lossless Trim');
-  const [status, setStatus] = useState('No file loaded');
+  const [status, setStatus] = useState('Idle');
   const [error, setError] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [lastLog, setLastLog] = useState('');
@@ -188,7 +187,7 @@ function App() {
   const [convertAudioCodec, setConvertAudioCodec] = useState('aac');
   const [convertVideoBitrate, setConvertVideoBitrate] = useState('5M');
   const [convertAudioBitrate, setConvertAudioBitrate] = useState('192k');
-  const [convertStatus, setConvertStatus] = useState('No file loaded');
+  const [convertStatus, setConvertStatus] = useState('Idle');
   const [convertError, setConvertError] = useState('');
   const [isConvertBusy, setIsConvertBusy] = useState(false);
   const [convertLog, setConvertLog] = useState('');
@@ -229,11 +228,6 @@ function App() {
     if (preset === 'Lossless Trim') {
       setVideoCodec('copy');
       setAudioCodec('copy');
-    }
-
-    if (preset === 'H.264 + AAC') {
-      setVideoCodec('libx264');
-      setAudioCodec('aac');
     }
 
     if (preset === 'Audio Only') {
@@ -309,17 +303,15 @@ function App() {
   }, [durationSeconds]);
 
   async function handleOpenFile() {
-    
-
     setError('');
     setIsBusy(true);
-    setStatus('Loading file...');
+    setStatus('Loading...');
 
     try {
       const selectedPath = await invoke<string | null>('open_file');
 
       if (!selectedPath) {
-        setStatus('File selection cancelled');
+        setStatus('Cancelled');
         return;
       }
 
@@ -335,7 +327,7 @@ function App() {
       setStart('00:00:00');
       setEnd(initialEnd);
       setPreviewTime(0);
-      setStatus('File analyzed');
+      setStatus('Ready');
       setLastLog('');
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
@@ -358,8 +350,6 @@ function App() {
   }
 
   async function handleRunLosslessCut() {
-    
-
     if (!sourcePath || !outputPath) {
       setError('Please choose a source file and an output path first.');
       return;
@@ -375,7 +365,7 @@ function App() {
 
     setError('');
     setIsBusy(true);
-    setStatus('Running ffmpeg...');
+    setStatus('Running...');
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_lossless_cut', {
@@ -387,7 +377,7 @@ function App() {
         audioCodec
       });
 
-      setStatus('Job finished');
+      setStatus('Done');
       setLastLog(`${result.command}\n\n${result.log}`.trim());
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
@@ -399,16 +389,14 @@ function App() {
   }
 
   async function handleOpenConvertFile() {
-    
-
     setConvertError('');
     setIsConvertBusy(true);
-    setConvertStatus('Loading file...');
+    setConvertStatus('Loading...');
 
     try {
       const selectedPath = await invoke<string | null>('open_file');
       if (!selectedPath) {
-        setConvertStatus('File selection cancelled');
+        setConvertStatus('Cancelled');
         return;
       }
 
@@ -416,7 +404,7 @@ function App() {
       setConvertSourcePath(selectedPath);
       setConvertProbe(result);
       setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainer));
-      setConvertStatus('File analyzed');
+      setConvertStatus('Ready');
       setConvertLog('');
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
@@ -432,15 +420,18 @@ function App() {
       return;
     }
 
-    const selectedOutput = await invoke<string | null>('save_file', { sourcePath, extension: outputExtension, suffix: '_trim' });
+    const selectedOutput = await invoke<string | null>('save_file', {
+      sourcePath: convertSourcePath,
+      extension: convertContainer,
+      suffix: '_convert'
+    });
+
     if (selectedOutput) {
       setConvertOutputPath(selectedOutput);
     }
   }
 
   async function handleRunConvert() {
-    
-
     if (!convertSourcePath || !convertOutputPath) {
       setConvertError('Please choose a source file and an output path first.');
       return;
@@ -448,7 +439,7 @@ function App() {
 
     setConvertError('');
     setIsConvertBusy(true);
-    setConvertStatus('Running ffmpeg...');
+    setConvertStatus('Running...');
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_convert', {
@@ -460,7 +451,7 @@ function App() {
         audioBitrate: convertAudioBitrate
       });
 
-      setConvertStatus('Job finished');
+      setConvertStatus('Done');
       setConvertLog(`${result.command}\n\n${result.log}`.trim());
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
@@ -521,11 +512,8 @@ function App() {
   function renderComplianceNotice() {
     return (
       <div className="compliance-box">
-        <strong>FFmpeg compliance notice</strong>
-        <p>
-          This app currently calls external <code>ffmpeg</code> and <code>ffprobe</code> binaries from the local system PATH.
-          This build does not bundle FFmpeg binaries, and the default convert presets avoid assuming GPL-only or nonfree codec builds.
-        </p>
+        <strong>FFmpeg compliance</strong>
+        <p>This build calls local ffmpeg and ffprobe binaries from the system PATH and does not bundle FFmpeg.</p>
       </div>
     );
   }
@@ -535,9 +523,9 @@ function App() {
       <>
         <section className="panel panel-grid">
           <div className="panel-block viewer-block">
-            <div className="panel-title-row">
+            <div className="section-header">
               <h3>Source</h3>
-              <span>{sourcePath ? fileNameFromPath(sourcePath) : 'No file'}</span>
+              <span>{sourcePath ? fileNameFromPath(sourcePath) : 'No file loaded'}</span>
             </div>
 
             <div className="video-preview-shell">
@@ -563,16 +551,13 @@ function App() {
             </div>
 
             <div className="preview-toolbar">
-              <div>
-                <span>Preview time</span>
-                <strong>{secondsToTimestamp(previewTime)}</strong>
-              </div>
+              <strong>{secondsToTimestamp(previewTime)}</strong>
               <div className="preview-actions">
                 <button type="button" className="button" onClick={() => setPreviewAsBoundary('start')} disabled={!sourcePath}>
-                  Set In From Preview
+                  Set In
                 </button>
                 <button type="button" className="button" onClick={() => setPreviewAsBoundary('end')} disabled={!sourcePath}>
-                  Set Out From Preview
+                  Set Out
                 </button>
               </div>
             </div>
@@ -583,9 +568,7 @@ function App() {
                 className="timeline-selection draggable"
                 style={{ left: `${selectionLeftPercent}%`, width: `${selectionWidthPercent}%` }}
                 onPointerDown={handleSelectionPointerDown}
-              >
-                <span className="timeline-label">Drag selection</span>
-              </div>
+              />
             </div>
 
             <div className="time-fields">
@@ -605,19 +588,19 @@ function App() {
 
             <div className="path-list">
               <div>
-                <span>Source path</span>
+                <span>Source</span>
                 <strong>{sourcePath || '-'}</strong>
               </div>
               <div>
-                <span>Output path</span>
+                <span>Output</span>
                 <strong>{outputPath || '-'}</strong>
               </div>
             </div>
           </div>
 
           <div className="panel-block settings-block">
-            <div className="panel-title-row">
-              <h3>Job</h3>
+            <div className="section-header">
+              <h3>Settings</h3>
               <span>{status}</span>
             </div>
 
@@ -640,7 +623,6 @@ function App() {
                 <span>Video</span>
                 <select value={videoCodec} onChange={(event) => setVideoCodec(event.target.value)}>
                   <option value="copy">copy</option>
-                  <option value="libx264">libx264</option>
                 </select>
               </label>
               <label>
@@ -652,13 +634,13 @@ function App() {
               </label>
             </div>
 
-            <div className="status-list">
+            <div className="status-list compact-list">
               <div>
                 <span>Format</span>
                 <strong>{probe?.format?.format_long_name || '-'}</strong>
               </div>
               <div>
-                <span>Video stream</span>
+                <span>Video</span>
                 <strong>
                   {videoStream?.codec_name
                     ? `${videoStream.codec_name}${videoStream.width ? ` ${videoStream.width}x${videoStream.height}` : ''}`
@@ -666,16 +648,12 @@ function App() {
                 </strong>
               </div>
               <div>
-                <span>Audio stream</span>
+                <span>Audio</span>
                 <strong>
                   {audioStream?.codec_name
                     ? `${audioStream.codec_name}${audioStream.channels ? ` ${audioStream.channels}ch` : ''}`
                     : '-'}
                 </strong>
-              </div>
-              <div>
-                <span>Bitrate</span>
-                <strong>{probe?.format?.bit_rate || '-'}</strong>
               </div>
             </div>
 
@@ -683,46 +661,6 @@ function App() {
 
             {error ? <div className="message error">{error}</div> : null}
             {lastLog ? <pre className="log-box">{lastLog}</pre> : null}
-          </div>
-        </section>
-
-        <section className="bottom-grid">
-          <div className="panel panel-block">
-            <div className="panel-title-row">
-              <h3>Queue</h3>
-              <span>{queueJobs.length} entries</span>
-            </div>
-
-            <div className="queue-list">
-              {queueJobs.map((job) => (
-                <div key={job.id} className="queue-row">
-                  <div>
-                    <strong>{job.label}</strong>
-                    <p>{job.detail}</p>
-                  </div>
-                  <div className="queue-meta">
-                    <span>{job.state}</span>
-                    <span>{job.progress}%</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel panel-block">
-            <div className="panel-title-row">
-              <h3>Available modules</h3>
-              <span>{tools.length}</span>
-            </div>
-
-            <div className="tool-table">
-              {tools.map((tool) => (
-                <div key={tool.id} className="tool-row">
-                  <strong>{tool.title}</strong>
-                  <span>{tool.tagline}</span>
-                </div>
-              ))}
-            </div>
           </div>
         </section>
 
@@ -736,13 +674,13 @@ function App() {
       <>
         <section className="panel panel-grid">
           <div className="panel-block viewer-block">
-            <div className="panel-title-row">
+            <div className="section-header">
               <h3>Source</h3>
-              <span>{convertSourcePath ? fileNameFromPath(convertSourcePath) : 'No file'}</span>
+              <span>{convertSourcePath ? fileNameFromPath(convertSourcePath) : 'No file loaded'}</span>
             </div>
 
-            <div className="viewer-placeholder">
-              <span>{convertSourcePath ? 'Conversion source loaded' : 'No file loaded'}</span>
+            <div className="viewer-placeholder compact-placeholder">
+              <span>{convertSourcePath ? 'File loaded' : 'No file loaded'}</span>
             </div>
 
             <div className="time-fields compact-fields">
@@ -751,30 +689,30 @@ function App() {
                 <input value={convertDurationLabel} readOnly />
               </label>
               <label>
-                <span>Source format</span>
+                <span>Format</span>
                 <input value={convertProbe?.format?.format_long_name || '-'} readOnly />
               </label>
               <label>
-                <span>Target container</span>
+                <span>Container</span>
                 <input value={convertContainer} readOnly />
               </label>
             </div>
 
             <div className="path-list">
               <div>
-                <span>Source path</span>
+                <span>Source</span>
                 <strong>{convertSourcePath || '-'}</strong>
               </div>
               <div>
-                <span>Output path</span>
+                <span>Output</span>
                 <strong>{convertOutputPath || '-'}</strong>
               </div>
             </div>
           </div>
 
           <div className="panel-block settings-block">
-            <div className="panel-title-row">
-              <h3>Convert job</h3>
+            <div className="section-header">
+              <h3>Settings</h3>
               <span>{convertStatus}</span>
             </div>
 
@@ -800,7 +738,7 @@ function App() {
                 </select>
               </label>
               <label>
-                <span>Video codec</span>
+                <span>Video</span>
                 <select value={convertVideoCodec} onChange={(event) => setConvertVideoCodec(event.target.value)}>
                   <option value="mpeg4">mpeg4</option>
                   <option value="ffv1">ffv1</option>
@@ -809,7 +747,7 @@ function App() {
                 </select>
               </label>
               <label>
-                <span>Audio codec</span>
+                <span>Audio</span>
                 <select value={convertAudioCodec} onChange={(event) => setConvertAudioCodec(event.target.value)}>
                   <option value="aac">aac</option>
                   <option value="flac">flac</option>
@@ -838,9 +776,9 @@ function App() {
               </label>
             </div>
 
-            <div className="status-list">
+            <div className="status-list compact-list">
               <div>
-                <span>Source video</span>
+                <span>Video</span>
                 <strong>
                   {convertVideoStream?.codec_name
                     ? `${convertVideoStream.codec_name}${convertVideoStream.width ? ` ${convertVideoStream.width}x${convertVideoStream.height}` : ''}`
@@ -848,7 +786,7 @@ function App() {
                 </strong>
               </div>
               <div>
-                <span>Source audio</span>
+                <span>Audio</span>
                 <strong>
                   {convertAudioStream?.codec_name
                     ? `${convertAudioStream.codec_name}${convertAudioStream.channels ? ` ${convertAudioStream.channels}ch` : ''}`
@@ -856,11 +794,7 @@ function App() {
                 </strong>
               </div>
               <div>
-                <span>Safety profile</span>
-                <strong>Defaults avoid GPL-only and nonfree assumptions</strong>
-              </div>
-              <div>
-                <span>FFmpeg source</span>
+                <span>FFmpeg</span>
                 <strong>External system installation</strong>
               </div>
             </div>
@@ -869,46 +803,6 @@ function App() {
 
             {convertError ? <div className="message error">{convertError}</div> : null}
             {convertLog ? <pre className="log-box">{convertLog}</pre> : null}
-          </div>
-        </section>
-
-        <section className="bottom-grid">
-          <div className="panel panel-block">
-            <div className="panel-title-row">
-              <h3>Safe default presets</h3>
-              <span>{convertPresets.length}</span>
-            </div>
-
-            <div className="tool-table">
-              {convertPresets.map((entry) => (
-                <div key={entry.id} className="tool-row">
-                  <strong>{entry.name}</strong>
-                  <span>{`${entry.container} | ${entry.videoCodec} | ${entry.audioCodec}`}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel panel-block">
-            <div className="panel-title-row">
-              <h3>Compliance design</h3>
-              <span>Current build</span>
-            </div>
-
-            <div className="tool-table">
-              <div className="tool-row">
-                <strong>No bundled FFmpeg binaries</strong>
-                <span>This desktop build calls the local system installation instead.</span>
-              </div>
-              <div className="tool-row">
-                <strong>Official notice included</strong>
-                <span>See README and THIRD_PARTY_NOTICES for licensing notes and source links.</span>
-              </div>
-              <div className="tool-row">
-                <strong>Safer defaults</strong>
-                <span>Preset codecs avoid relying on GPL-only or nonfree FFmpeg configurations.</span>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -921,21 +815,11 @@ function App() {
     return (
       <section className="panel placeholder-panel">
         <div className="panel-block placeholder-block">
-          <div className="panel-title-row">
+          <div className="section-header">
             <h3>{activeModule.title}</h3>
-            <span>{activeTool}</span>
+            <span>Not implemented</span>
           </div>
           <p>{activeModule.description}</p>
-          <div className="placeholder-notes">
-            <div>
-              <span>Status</span>
-              <strong>Planned</strong>
-            </div>
-            <div>
-              <span>Next step</span>
-              <strong>Implement real FFmpeg actions for this module</strong>
-            </div>
-          </div>
         </div>
       </section>
     );
@@ -946,7 +830,6 @@ function App() {
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1>FFmpeg Forge</h1>
-          <p>Desktop tools</p>
         </div>
 
         <nav className="module-list" aria-label="Modules">
@@ -958,32 +841,27 @@ function App() {
               onClick={() => setActiveTool(tool.id)}
             >
               <span className="module-title">{tool.title}</span>
-              <span className="module-meta">{tool.category}</span>
             </button>
           ))}
         </nav>
 
         <div className="sidebar-footer">
-          <strong>Licensing</strong>
-          <p>FFmpeg is not bundled in this build. See README and THIRD_PARTY_NOTICES.</p>
+          <span>Uses local FFmpeg binaries.</span>
         </div>
       </aside>
 
       <main className="workspace">
         <header className="workspace-header">
-          <div>
-            <h2>{activeModule.title}</h2>
-            <p>{activeModule.description}</p>
-          </div>
+          <h2>{activeModule.title}</h2>
 
           <div className="header-actions">
             {activeTool === 'lossless-cut' ? (
               <>
                 <button type="button" className="button button-primary" onClick={handleOpenFile} disabled={isBusy}>
-                  Open file
+                  Open
                 </button>
                 <button type="button" className="button" onClick={handlePickOutput} disabled={!sourcePath || isBusy}>
-                  Choose output
+                  Output
                 </button>
                 <button type="button" className="button" onClick={handleRunLosslessCut} disabled={!sourcePath || isBusy}>
                   Run
@@ -994,7 +872,7 @@ function App() {
             {activeTool === 'smart-convert' ? (
               <>
                 <button type="button" className="button button-primary" onClick={handleOpenConvertFile} disabled={isConvertBusy}>
-                  Open file
+                  Open
                 </button>
                 <button
                   type="button"
@@ -1002,7 +880,7 @@ function App() {
                   onClick={handlePickConvertOutput}
                   disabled={!convertSourcePath || isConvertBusy}
                 >
-                  Choose output
+                  Output
                 </button>
                 <button type="button" className="button" onClick={handleRunConvert} disabled={!convertSourcePath || isConvertBusy}>
                   Run
@@ -1021,6 +899,3 @@ function App() {
 }
 
 export default App;
-
-
-
