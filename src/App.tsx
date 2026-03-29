@@ -531,13 +531,7 @@ function App() {
   }, [durationSeconds, keyframes, snapToKeyframes, videoCodec, selectionStartSeconds, selectionEndSeconds]);
 
   useEffect(() => {
-    let unlistenWindow: undefined | (() => void);
-    let unlistenWebview: undefined | (() => void);
-    let unlistenWebviewWindow: undefined | (() => void);
-    let unlistenGlobalEnter: undefined | (() => void);
-    let unlistenGlobalOver: undefined | (() => void);
-    let unlistenGlobalDrop: undefined | (() => void);
-    let unlistenGlobalLeave: undefined | (() => void);
+    const nativeUnlistenFns: Array<() => void> = [];
 
     function applyDropDebug(
       source: DropDebugState['source'],
@@ -614,51 +608,78 @@ function App() {
       const currentWebview = getCurrentWebview();
       const currentWebviewWindow = getCurrentWebviewWindow();
 
-      unlistenWindow = await currentWindow.onDragDropEvent((event) => {
-        handleNativeEvent(
-          'window',
-          event.payload.type,
-          event.payload.type === 'leave' ? undefined : event.payload,
-          'Tauri Window drag/drop event'
-        );
+      const bindings = await Promise.allSettled([
+        currentWindow.onDragDropEvent((event) => {
+          handleNativeEvent(
+            'window',
+            event.payload.type,
+            event.payload.type === 'leave' ? undefined : event.payload,
+            'Tauri Window drag/drop event'
+          );
+        }),
+        currentWebview.onDragDropEvent((event) => {
+          handleNativeEvent(
+            'webview',
+            event.payload.type,
+            event.payload.type === 'leave' ? undefined : event.payload,
+            'Tauri Webview drag/drop event'
+          );
+        }),
+        currentWebviewWindow.onDragDropEvent((event) => {
+          handleNativeEvent(
+            'webviewWindow',
+            event.payload.type,
+            event.payload.type === 'leave' ? undefined : event.payload,
+            'Tauri WebviewWindow drag/drop event'
+          );
+        }),
+        listenEvent<DragDropPayload>(TauriEvent.DRAG_ENTER, (event) => {
+          handleNativeEvent('global', 'enter', event.payload, 'Global Tauri drag-enter event');
+        }),
+        listenEvent<DragDropPayload>(TauriEvent.DRAG_OVER, (event) => {
+          handleNativeEvent('global', 'over', event.payload, 'Global Tauri drag-over event');
+        }),
+        listenEvent<DragDropPayload>(TauriEvent.DRAG_DROP, (event) => {
+          handleNativeEvent('global', 'drop', event.payload, 'Global Tauri drag-drop event');
+        }),
+        listenEvent(TauriEvent.DRAG_LEAVE, () => {
+          handleNativeEvent('global', 'leave', undefined, 'Global Tauri drag-leave event');
+        })
+      ]);
+
+      const bindingNames = ['window', 'webview', 'webviewWindow', 'global-enter', 'global-over', 'global-drop', 'global-leave'];
+      const successBindings: string[] = [];
+      const failedBindings: string[] = [];
+
+      bindings.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          nativeUnlistenFns.push(result.value);
+          successBindings.push(bindingNames[index]);
+          return;
+        }
+
+        failedBindings.push(`${bindingNames[index]}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
       });
 
-      unlistenWebview = await currentWebview.onDragDropEvent((event) => {
-        handleNativeEvent(
-          'webview',
-          event.payload.type,
-          event.payload.type === 'leave' ? undefined : event.payload,
-          'Tauri Webview drag/drop event'
-        );
-      });
-
-      unlistenWebviewWindow = await currentWebviewWindow.onDragDropEvent((event) => {
-        handleNativeEvent(
-          'webviewWindow',
-          event.payload.type,
-          event.payload.type === 'leave' ? undefined : event.payload,
-          'Tauri WebviewWindow drag/drop event'
-        );
-      });
-
-      unlistenGlobalEnter = await listenEvent<DragDropPayload>(TauriEvent.DRAG_ENTER, (event) => {
-        handleNativeEvent('global', 'enter', event.payload, 'Global Tauri drag-enter event');
-      });
-
-      unlistenGlobalOver = await listenEvent<DragDropPayload>(TauriEvent.DRAG_OVER, (event) => {
-        handleNativeEvent('global', 'over', event.payload, 'Global Tauri drag-over event');
-      });
-
-      unlistenGlobalDrop = await listenEvent<DragDropPayload>(TauriEvent.DRAG_DROP, (event) => {
-        handleNativeEvent('global', 'drop', event.payload, 'Global Tauri drag-drop event');
-      });
-
-      unlistenGlobalLeave = await listenEvent(TauriEvent.DRAG_LEAVE, () => {
-        handleNativeEvent('global', 'leave', undefined, 'Global Tauri drag-leave event');
-      });
+      setDropDebug((current) => ({
+        ...current,
+        timestamp: new Date().toISOString(),
+        detail: [
+          successBindings.length ? `Bound native listeners: ${successBindings.join(', ')}` : '',
+          failedBindings.length ? `Failed listeners: ${failedBindings.join(' | ')}` : ''
+        ]
+          .filter(Boolean)
+          .join(' || ') || 'No native drag/drop listeners were bound.'
+      }));
     }
 
-    void bindDragDropListener();
+    void bindDragDropListener().catch((error) => {
+      setDropDebug((current) => ({
+        ...current,
+        timestamp: new Date().toISOString(),
+        detail: `Native drag/drop setup failed: ${error instanceof Error ? error.message : String(error)}`
+      }));
+    });
 
     function handleDomDragEnter(event: DragEvent) {
       if (!isFileDrag(event.dataTransfer)) {
@@ -730,13 +751,12 @@ function App() {
     return () => {
       domDragDepthRef.current = 0;
       setIsDropTargetActive(false);
-      unlistenWindow?.();
-      unlistenWebview?.();
-      unlistenWebviewWindow?.();
-      unlistenGlobalEnter?.();
-      unlistenGlobalOver?.();
-      unlistenGlobalDrop?.();
-      unlistenGlobalLeave?.();
+      nativeUnlistenFns.forEach((unlisten) => {
+        try {
+          unlisten();
+        } catch {
+        }
+      });
       window.removeEventListener('dragenter', handleDomDragEnter, true);
       window.removeEventListener('dragover', handleDomDragOver, true);
       window.removeEventListener('dragleave', handleDomDragLeave, true);
