@@ -2,40 +2,7 @@ use rfd::FileDialog;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::{Emitter, Manager};
-
-#[cfg(windows)]
-use std::{
-    cell::UnsafeCell,
-    collections::HashSet,
-    ffi::OsString,
-    os::{raw::c_void, windows::ffi::OsStringExt},
-    path::PathBuf as WindowsPathBuf,
-    ptr,
-    rc::Rc,
-    sync::{Mutex, OnceLock},
-};
-
-#[cfg(windows)]
-use windows::{
-    core::{implement, BOOL},
-    Win32::{
-        Foundation::{DRAGDROP_E_INVALIDHWND, HWND, LPARAM, POINT, POINTL},
-        Graphics::Gdi::ScreenToClient,
-        System::{
-            Com::{CoInitializeEx, IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL, COINIT_APARTMENTTHREADED},
-            Ole::{
-                IDropTarget, IDropTarget_Impl, RegisterDragDrop, RevokeDragDrop, CF_HDROP,
-                DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE,
-            },
-            SystemServices::MODIFIERKEYS_FLAGS,
-        },
-        UI::{
-            Shell::{DragFinish, DragQueryFileW, HDROP},
-            WindowsAndMessaging::EnumChildWindows,
-        },
-    },
-};
+use tauri::{DragDropEvent, Emitter, Manager, WebviewEvent, WindowEvent};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,221 +54,6 @@ struct NativeFileDropStatusPayload {
     detail: String,
 }
 
-#[cfg(windows)]
-enum NativeWindowsDragDropEvent {
-    Enter {
-        paths: Vec<WindowsPathBuf>,
-        position: (i32, i32),
-    },
-    Over {
-        position: (i32, i32),
-    },
-    Drop {
-        paths: Vec<WindowsPathBuf>,
-        position: (i32, i32),
-    },
-    Leave,
-}
-
-#[cfg(windows)]
-#[derive(Default)]
-struct WindowsOleDropController {
-    drop_targets: Vec<IDropTarget>,
-    registered_windows: usize,
-}
-
-#[cfg(windows)]
-impl WindowsOleDropController {
-    fn new(hwnd: HWND, handler: Rc<dyn Fn(NativeWindowsDragDropEvent)>) -> Self {
-        let mut controller = Self::default();
-        let mut callback = |child_hwnd| controller.inject_in_hwnd(child_hwnd, handler.clone());
-        let mut trait_obj: &mut dyn FnMut(HWND) -> bool = &mut callback;
-        let closure_pointer_pointer: *mut c_void = unsafe { std::mem::transmute(&mut trait_obj) };
-        let lparam = LPARAM(closure_pointer_pointer as isize);
-
-        unsafe extern "system" fn enumerate_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            let closure = unsafe {
-                &mut *(lparam.0 as *mut c_void as *mut &mut dyn FnMut(HWND) -> bool)
-            };
-            closure(hwnd).into()
-        }
-
-        let _ = unsafe { EnumChildWindows(Some(hwnd), Some(enumerate_callback), lparam) };
-        controller
-    }
-
-    fn inject_in_hwnd(&mut self, hwnd: HWND, handler: Rc<dyn Fn(NativeWindowsDragDropEvent)>) -> bool {
-        let drag_drop_target: IDropTarget = WindowsOleDropTarget::new(hwnd, handler).into();
-        if unsafe { RevokeDragDrop(hwnd) } != Err(DRAGDROP_E_INVALIDHWND.into())
-            && unsafe { RegisterDragDrop(hwnd, &drag_drop_target) }.is_ok()
-        {
-            self.drop_targets.push(drag_drop_target);
-            self.registered_windows += 1;
-        }
-
-        true
-    }
-}
-
-#[cfg(windows)]
-#[implement(IDropTarget)]
-struct WindowsOleDropTarget {
-    hwnd: HWND,
-    listener: Rc<dyn Fn(NativeWindowsDragDropEvent)>,
-    cursor_effect: UnsafeCell<DROPEFFECT>,
-    enter_is_valid: UnsafeCell<bool>,
-}
-
-#[cfg(windows)]
-impl WindowsOleDropTarget {
-    fn new(hwnd: HWND, listener: Rc<dyn Fn(NativeWindowsDragDropEvent)>) -> Self {
-        Self {
-            hwnd,
-            listener,
-            cursor_effect: DROPEFFECT_NONE.into(),
-            enter_is_valid: false.into(),
-        }
-    }
-
-    unsafe fn iterate_filenames<F>(
-        data_obj: windows_core::Ref<'_, IDataObject>,
-        mut callback: F,
-    ) -> Option<HDROP>
-    where
-        F: FnMut(WindowsPathBuf),
-    {
-        let drop_format = FORMATETC {
-            cfFormat: CF_HDROP.0,
-            ptd: ptr::null_mut(),
-            dwAspect: DVASPECT_CONTENT.0,
-            lindex: -1,
-            tymed: TYMED_HGLOBAL.0 as u32,
-        };
-
-        match data_obj
-            .as_ref()
-            .expect("Received null IDataObject")
-            .GetData(&drop_format)
-        {
-            Ok(medium) => {
-                let hdrop = HDROP(medium.u.hGlobal.0 as _);
-                let item_count = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
-
-                for index in 0..item_count {
-                    let character_count = DragQueryFileW(hdrop, index, None) as usize;
-                    let mut path_buf = vec![0; character_count + 1];
-                    DragQueryFileW(hdrop, index, Some(&mut path_buf));
-                    callback(OsString::from_wide(&path_buf[..character_count]).into());
-                }
-
-                Some(hdrop)
-            }
-            Err(_) => None,
-        }
-    }
-}
-
-#[cfg(windows)]
-#[allow(non_snake_case)]
-impl IDropTarget_Impl for WindowsOleDropTarget_Impl {
-    fn DragEnter(
-        &self,
-        pDataObj: windows_core::Ref<'_, IDataObject>,
-        _grfKeyState: MODIFIERKEYS_FLAGS,
-        pt: &POINTL,
-        pdwEffect: *mut DROPEFFECT,
-    ) -> windows::core::Result<()> {
-        let mut local_point = POINT { x: pt.x, y: pt.y };
-        let _ = unsafe { ScreenToClient(self.hwnd, &mut local_point) };
-
-        let mut paths = Vec::new();
-        let hdrop = unsafe { WindowsOleDropTarget::iterate_filenames(pDataObj, |path| paths.push(path)) };
-        let enter_is_valid = hdrop.is_some();
-
-        unsafe {
-            *self.enter_is_valid.get() = enter_is_valid;
-        }
-
-        let cursor_effect = if enter_is_valid {
-            DROPEFFECT_COPY
-        } else {
-            DROPEFFECT_NONE
-        };
-
-        unsafe {
-            *pdwEffect = cursor_effect;
-            *self.cursor_effect.get() = cursor_effect;
-        }
-
-        if enter_is_valid {
-            (self.listener)(NativeWindowsDragDropEvent::Enter {
-                paths,
-                position: (local_point.x, local_point.y),
-            });
-        }
-
-        Ok(())
-    }
-
-    fn DragOver(
-        &self,
-        _grfKeyState: MODIFIERKEYS_FLAGS,
-        pt: &POINTL,
-        pdwEffect: *mut DROPEFFECT,
-    ) -> windows::core::Result<()> {
-        if unsafe { *self.enter_is_valid.get() } {
-            let mut local_point = POINT { x: pt.x, y: pt.y };
-            let _ = unsafe { ScreenToClient(self.hwnd, &mut local_point) };
-            (self.listener)(NativeWindowsDragDropEvent::Over {
-                position: (local_point.x, local_point.y),
-            });
-        }
-
-        unsafe {
-            *pdwEffect = *self.cursor_effect.get();
-        }
-
-        Ok(())
-    }
-
-    fn DragLeave(&self) -> windows::core::Result<()> {
-        if unsafe { *self.enter_is_valid.get() } {
-            (self.listener)(NativeWindowsDragDropEvent::Leave);
-        }
-
-        Ok(())
-    }
-
-    fn Drop(
-        &self,
-        pDataObj: windows_core::Ref<'_, IDataObject>,
-        _grfKeyState: MODIFIERKEYS_FLAGS,
-        pt: &POINTL,
-        _pdwEffect: *mut DROPEFFECT,
-    ) -> windows::core::Result<()> {
-        if unsafe { *self.enter_is_valid.get() } {
-            let mut local_point = POINT { x: pt.x, y: pt.y };
-            let _ = unsafe { ScreenToClient(self.hwnd, &mut local_point) };
-
-            let mut paths = Vec::new();
-            let hdrop = unsafe { WindowsOleDropTarget::iterate_filenames(pDataObj, |path| paths.push(path)) };
-            (self.listener)(NativeWindowsDragDropEvent::Drop {
-                paths,
-                position: (local_point.x, local_point.y),
-            });
-
-            if let Some(hdrop) = hdrop {
-                unsafe {
-                    DragFinish(hdrop);
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
 fn emit_native_file_drop_status<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     window_label: &str,
@@ -318,97 +70,53 @@ fn emit_native_file_drop_status<R: tauri::Runtime>(
     );
 }
 
-#[cfg(windows)]
-fn install_windows_file_drop_fallback<R: tauri::Runtime>(webview: &tauri::Webview<R>) -> tauri::Result<()> {
-    static INSTALLED_WEBVIEWS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+fn emit_native_drag_drop_event<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    window_label: &str,
+    detail: &str,
+    event: &DragDropEvent,
+) {
+    let payload = match event {
+        DragDropEvent::Enter { paths, position } => NativeFileDropPayload {
+            kind: "enter".to_string(),
+            paths: paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+            position: Some(DropPosition {
+                x: position.x,
+                y: position.y,
+            }),
+        },
+        DragDropEvent::Over { position } => NativeFileDropPayload {
+            kind: "over".to_string(),
+            paths: Vec::new(),
+            position: Some(DropPosition {
+                x: position.x,
+                y: position.y,
+            }),
+        },
+        DragDropEvent::Drop { paths, position } => NativeFileDropPayload {
+            kind: "drop".to_string(),
+            paths: paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect(),
+            position: Some(DropPosition {
+                x: position.x,
+                y: position.y,
+            }),
+        },
+        DragDropEvent::Leave => NativeFileDropPayload {
+            kind: "leave".to_string(),
+            paths: Vec::new(),
+            position: None,
+        },
+        _ => return,
+    };
 
-    let window = webview.window();
-    let hwnd = window.hwnd()?;
-    let app_handle = webview.app_handle().clone();
-    let window_label = webview.label().to_string();
-
-    {
-        let installed = INSTALLED_WEBVIEWS.get_or_init(|| Mutex::new(HashSet::new()));
-        let installed = installed.lock().expect("failed to lock native drop install state");
-        if installed.contains(&window_label) {
-            emit_native_file_drop_status(&app_handle, &window_label, 0, "Native Windows drop bridge already installed.");
-            return Ok(());
-        }
-    }
-
-    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    let event_app_handle = app_handle.clone();
-    let event_window_label = window_label.clone();
-
-    let listener: Rc<dyn Fn(NativeWindowsDragDropEvent)> = Rc::new(move |event| {
-        let payload = match event {
-            NativeWindowsDragDropEvent::Enter { paths, position } => NativeFileDropPayload {
-                kind: "enter".to_string(),
-                paths: paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect(),
-                position: Some(DropPosition {
-                    x: position.0 as f64,
-                    y: position.1 as f64,
-                }),
-            },
-            NativeWindowsDragDropEvent::Over { position } => NativeFileDropPayload {
-                kind: "over".to_string(),
-                paths: Vec::new(),
-                position: Some(DropPosition {
-                    x: position.0 as f64,
-                    y: position.1 as f64,
-                }),
-            },
-            NativeWindowsDragDropEvent::Drop { paths, position } => NativeFileDropPayload {
-                kind: "drop".to_string(),
-                paths: paths
-                    .iter()
-                    .map(|path| path.to_string_lossy().to_string())
-                    .collect(),
-                position: Some(DropPosition {
-                    x: position.0 as f64,
-                    y: position.1 as f64,
-                }),
-            },
-            NativeWindowsDragDropEvent::Leave => NativeFileDropPayload {
-                kind: "leave".to_string(),
-                paths: Vec::new(),
-                position: None,
-            },
-        };
-
-        let _ = event_app_handle.emit_to(event_window_label.as_str(), "native-file-drop", payload);
-    });
-
-    let controller = WindowsOleDropController::new(hwnd, listener);
-    let registered_windows = controller.registered_windows;
-
-    if registered_windows == 0 {
-        emit_native_file_drop_status(
-            &app_handle,
-            &window_label,
-            0,
-            "Native Windows drop bridge did not find any WebView child windows to register.",
-        );
-        return Ok(());
-    }
-
-    {
-        let installed = INSTALLED_WEBVIEWS.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut installed = installed.lock().expect("failed to lock native drop install state");
-        installed.insert(window_label.clone());
-    }
-
-    let _ = Box::leak(Box::new(controller));
-    emit_native_file_drop_status(
-        &app_handle,
-        &window_label,
-        registered_windows,
-        format!("Native Windows drop bridge installed on {registered_windows} WebView window(s)."),
-    );
-    Ok(())
+    let _ = app_handle.emit_to(window_label, "native-file-drop", payload);
+    emit_native_file_drop_status(app_handle, window_label, 1, detail);
 }
 
 #[derive(serde::Deserialize)]
@@ -630,14 +338,36 @@ fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .on_page_load(|webview, _| {
-            #[cfg(windows)]
-            {
-                let webview = webview.clone();
-                let install_webview = webview.clone();
-                let _ = webview.run_on_main_thread(move || {
-                    let _ = install_windows_file_drop_fallback(&install_webview);
-                });
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                emit_native_file_drop_status(
+                    &app.handle().clone(),
+                    window.label(),
+                    1,
+                    "Native drag and drop bridge initialized.",
+                );
+            }
+
+            Ok(())
+        })
+        .on_webview_event(|webview, event| {
+            if let WebviewEvent::DragDrop(event) = event {
+                emit_native_drag_drop_event(
+                    &webview.app_handle(),
+                    webview.label(),
+                    "Received native Tauri webview drag/drop event.",
+                    event,
+                );
+            }
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::DragDrop(event) = event {
+                emit_native_drag_drop_event(
+                    &window.app_handle(),
+                    window.label(),
+                    "Received native Tauri window drag/drop event.",
+                    event,
+                );
             }
         })
         .invoke_handler(tauri::generate_handler![

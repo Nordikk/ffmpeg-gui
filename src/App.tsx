@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
@@ -525,7 +524,6 @@ function App() {
   }, [durationSeconds, keyframes, snapToKeyframes, videoCodec, selectionStartSeconds, selectionEndSeconds]);
 
   useEffect(() => {
-    let unlistenWebview: undefined | (() => void);
     let unlistenFallback: undefined | (() => void);
     let unlistenFallbackStatus: undefined | (() => void);
 
@@ -560,42 +558,7 @@ function App() {
     }
 
     async function bindDragDropListener() {
-      const currentWebview = getCurrentWebview();
       const currentWebviewWindow = getCurrentWebviewWindow();
-
-      unlistenWebview = await currentWebview.onDragDropEvent((event) => {
-        if (event.payload.type === 'enter') {
-          setIsDropTargetActive(true);
-          applyDropDebug('webview', 'enter', event.payload.paths);
-          return;
-        }
-
-        if (event.payload.type === 'over') {
-          setDropDebug((current) => ({
-            ...current,
-            lastEvent: 'over',
-            timestamp: new Date().toISOString(),
-            source: 'webview'
-          }));
-          return;
-        }
-
-        if (event.payload.type === 'leave') {
-          setIsDropTargetActive(false);
-          applyDropDebug('webview', 'leave');
-          return;
-        }
-
-        if (event.payload.type === 'drop') {
-          setIsDropTargetActive(false);
-          applyDropDebug('webview', 'drop', event.payload.paths);
-          const [firstPath] = event.payload.paths;
-
-          if (firstPath) {
-            processDroppedPath(firstPath);
-          }
-        }
-      });
 
       unlistenFallback = await currentWebviewWindow.listen<NativeFileDropPayload>('native-file-drop', (event) => {
         if (event.payload.kind === 'enter') {
@@ -715,7 +678,6 @@ function App() {
     return () => {
       domDragDepthRef.current = 0;
       setIsDropTargetActive(false);
-      unlistenWebview?.();
       unlistenFallback?.();
       unlistenFallbackStatus?.();
       window.removeEventListener('dragenter', handleDomDragEnter, true);
