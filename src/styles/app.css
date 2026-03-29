@@ -136,10 +136,18 @@ label span,
 }
 
 .sidebar-footer {
+  display: grid;
+  gap: 8px;
   margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid var(--border);
   font-size: 0.86rem;
+}
+
+.sidebar-footer strong {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #f3c1cb;
 }
 
 .workspace {
@@ -495,19 +503,6 @@ select {
 .placeholder-block p {
   margin: 0;
   color: var(--text-muted);
-}
-
-.compliance-box {
-  margin-top: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #161b21;
-}
-
-.compliance-box strong {
-  display: block;
-  margin-bottom: 4px;
 }
 
 @media (max-width: 1100px) {

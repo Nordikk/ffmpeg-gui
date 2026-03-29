@@ -721,15 +721,6 @@ function App() {
     setEnd(secondsToTimestamp(clamp(nextEnd, selectionStartSeconds + 0.1, durationSeconds)));
   }
 
-  function renderComplianceNotice() {
-    return (
-      <div className="compliance-box">
-        <strong>FFmpeg compliance</strong>
-        <p>This build calls local ffmpeg and ffprobe binaries from the system PATH and does not bundle FFmpeg.</p>
-      </div>
-    );
-  }
-
   function renderToolStatus() {
     const ffmpegStatus = toolStatus?.ffmpeg;
     const ffprobeStatus = toolStatus?.ffprobe;
@@ -963,8 +954,6 @@ function App() {
             {lastLog ? <pre className="log-box">{lastLog}</pre> : null}
           </div>
         </section>
-
-        {renderComplianceNotice()}
       </>
     );
   }
@@ -1105,8 +1094,6 @@ function App() {
             {convertLog ? <pre className="log-box">{convertLog}</pre> : null}
           </div>
         </section>
-
-        {renderComplianceNotice()}
       </>
     );
   }
@@ -1156,6 +1143,7 @@ function App() {
 
         <div className="sidebar-footer">
           <span>{ffmpegReady ? 'FFmpeg environment ready.' : 'FFmpeg setup required.'}</span>
+          <strong>Made with heart by Nordik</strong>
         </div>
       </aside>
 
