@@ -52,7 +52,8 @@ type DropDebugState = {
   pathCount: number;
   firstPath: string;
   timestamp: string;
-  source: 'none' | 'webview' | 'win32';
+  source: 'none' | 'webview' | 'win32' | 'dom';
+  detail: string;
 };
 
 type NativeFileDropPayload = {
@@ -150,6 +151,104 @@ function filePathToVideoUrl(filePath: string) {
 
   const normalized = filePath.replaceAll('\\', '/');
   return `file:///${encodeURI(normalized)}`;
+}
+
+function decodeFileUri(value: string) {
+  if (!value.toLowerCase().startsWith('file://')) {
+    return '';
+  }
+
+  try {
+    const url = new URL(value);
+    const decodedPath = decodeURIComponent(url.pathname || '');
+
+    if (url.hostname) {
+      return `\\\\${url.hostname}${decodedPath.replaceAll('/', '\\')}`;
+    }
+
+    if (/^\/[a-zA-Z]:/.test(decodedPath)) {
+      return decodedPath.slice(1).replaceAll('/', '\\');
+    }
+
+    return decodedPath.replaceAll('/', '\\');
+  } catch {
+    return '';
+  }
+}
+
+function uniquePaths(paths: string[]) {
+  return [...new Set(paths.filter(Boolean))];
+}
+
+function extractPathsFromDroppedText(rawText: string) {
+  return uniquePaths(
+    rawText
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry && !entry.startsWith('#'))
+      .map((entry) => {
+        const decodedUri = decodeFileUri(entry);
+        if (decodedUri) {
+          return decodedUri;
+        }
+
+        if (/^[a-zA-Z]:[\\/]/.test(entry) || entry.startsWith('\\\\')) {
+          return entry;
+        }
+
+        return '';
+      })
+  );
+}
+
+function describeDataTransfer(dataTransfer: DataTransfer | null) {
+  if (!dataTransfer) {
+    return 'No dataTransfer available';
+  }
+
+  const types = Array.from(dataTransfer.types || []);
+  const items = Array.from(dataTransfer.items || []).map((item) => `${item.kind}:${item.type || 'unknown'}`);
+  const files = Array.from(dataTransfer.files || []).map((file) => file.name);
+
+  return [
+    types.length ? `types=${types.join(', ')}` : '',
+    items.length ? `items=${items.join(', ')}` : '',
+    files.length ? `files=${files.join(', ')}` : ''
+  ]
+    .filter(Boolean)
+    .join(' | ');
+}
+
+function extractDroppedPaths(dataTransfer: DataTransfer | null) {
+  if (!dataTransfer) {
+    return [];
+  }
+
+  const fileObjectPaths = Array.from(dataTransfer.files || [])
+    .map((file) => ('path' in file ? String((file as File & { path?: string }).path || '') : ''))
+    .filter(Boolean);
+
+  if (fileObjectPaths.length) {
+    return uniquePaths(fileObjectPaths);
+  }
+
+  const uriList = dataTransfer.getData('text/uri-list');
+  const textPlain = dataTransfer.getData('text/plain');
+
+  return uniquePaths([
+    ...extractPathsFromDroppedText(uriList),
+    ...extractPathsFromDroppedText(textPlain)
+  ]);
+}
+
+function isFileDrag(dataTransfer: DataTransfer | null) {
+  if (!dataTransfer) {
+    return false;
+  }
+
+  const hasFileType = Array.from(dataTransfer.types || []).includes('Files');
+  const hasFileItem = Array.from(dataTransfer.items || []).some((item) => item.kind === 'file');
+  return hasFileType || hasFileItem;
 }
 
 function buildLosslessCommandPreview(
@@ -274,12 +373,14 @@ function App() {
     pathCount: 0,
     firstPath: '',
     timestamp: '',
-    source: 'none'
+    source: 'none',
+    detail: ''
   });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineTrackRef = useRef<HTMLDivElement | null>(null);
   const lastDropRef = useRef<{ path: string; at: number }>({ path: '', at: 0 });
+  const domDragDepthRef = useRef(0);
   const dragRef = useRef<{ active: false } | { active: true; mode: 'move' | 'start' | 'end'; startX: number; startStart: number; startEnd: number }>({
     active: false
   });
@@ -425,14 +526,16 @@ function App() {
     function applyDropDebug(
       source: DropDebugState['source'],
       lastEvent: DropDebugState['lastEvent'],
-      paths: string[] = []
+      paths: string[] = [],
+      detail = ''
     ) {
       setDropDebug({
         lastEvent,
         pathCount: paths.length,
         firstPath: paths[0] || '',
         timestamp: new Date().toISOString(),
-        source
+        source,
+        detail
       });
     }
 
@@ -505,10 +608,82 @@ function App() {
 
     void bindDragDropListener();
 
+    function handleDomDragEnter(event: DragEvent) {
+      if (!isFileDrag(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      domDragDepthRef.current += 1;
+      setIsDropTargetActive(true);
+      applyDropDebug('dom', 'enter', [], describeDataTransfer(event.dataTransfer));
+    }
+
+    function handleDomDragOver(event: DragEvent) {
+      if (!isFileDrag(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+
+      setDropDebug((current) => ({
+        ...current,
+        lastEvent: 'over',
+        timestamp: new Date().toISOString(),
+        source: 'dom',
+        detail: describeDataTransfer(event.dataTransfer)
+      }));
+    }
+
+    function handleDomDragLeave(event: DragEvent) {
+      if (!isFileDrag(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      domDragDepthRef.current = Math.max(0, domDragDepthRef.current - 1);
+
+      if (domDragDepthRef.current === 0) {
+        setIsDropTargetActive(false);
+        applyDropDebug('dom', 'leave', [], describeDataTransfer(event.dataTransfer));
+      }
+    }
+
+    function handleDomDrop(event: DragEvent) {
+      if (!isFileDrag(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      domDragDepthRef.current = 0;
+      setIsDropTargetActive(false);
+
+      const paths = extractDroppedPaths(event.dataTransfer);
+      applyDropDebug('dom', 'drop', paths, describeDataTransfer(event.dataTransfer));
+
+      const [firstPath] = paths;
+      if (firstPath) {
+        processDroppedPath(firstPath);
+      }
+    }
+
+    window.addEventListener('dragenter', handleDomDragEnter, true);
+    window.addEventListener('dragover', handleDomDragOver, true);
+    window.addEventListener('dragleave', handleDomDragLeave, true);
+    window.addEventListener('drop', handleDomDrop, true);
+
     return () => {
+      domDragDepthRef.current = 0;
       setIsDropTargetActive(false);
       unlistenWebview?.();
       unlistenFallback?.();
+      window.removeEventListener('dragenter', handleDomDragEnter, true);
+      window.removeEventListener('dragover', handleDomDragOver, true);
+      window.removeEventListener('dragleave', handleDomDragLeave, true);
+      window.removeEventListener('drop', handleDomDrop, true);
     };
   }, [activeTool, convertContainer]);
 
@@ -930,6 +1105,10 @@ function App() {
           <div>
             <span>Timestamp</span>
             <strong>{dropDebug.timestamp ? formatDateTime(dropDebug.timestamp) : '-'}</strong>
+          </div>
+          <div>
+            <span>Detail</span>
+            <strong>{dropDebug.detail || '-'}</strong>
           </div>
           <div>
             <span>Build</span>
