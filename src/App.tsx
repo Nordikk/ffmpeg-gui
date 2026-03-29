@@ -3,6 +3,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
 
+declare const __BUILD_ID__: string;
+
 type ToolId = (typeof tools)[number]['id'];
 
 type ProbeStream = {
@@ -219,6 +221,7 @@ function nearestKeyframe(value: number, keyframes: number[]) {
 }
 
 function App() {
+  const buildId = __BUILD_ID__;
   const [activeTool, setActiveTool] = useState<ToolId>('lossless-cut');
   const [toolStatus, setToolStatus] = useState<ToolStatus | null>(null);
 
@@ -839,10 +842,10 @@ function App() {
   function renderDropDebug() {
     return (
       <section className="debug-panel">
-        <div className="section-header">
-          <h3>Drop Debug</h3>
-          <span>{dropDebug.lastEvent}</span>
-        </div>
+          <div className="section-header">
+            <h3>Drop Debug</h3>
+            <span>{dropDebug.lastEvent}</span>
+          </div>
         <div className="debug-grid">
           <div>
             <span>Last event</span>
@@ -859,6 +862,10 @@ function App() {
           <div>
             <span>Timestamp</span>
             <strong>{dropDebug.timestamp ? formatDateTime(dropDebug.timestamp) : '-'}</strong>
+          </div>
+          <div>
+            <span>Build</span>
+            <strong>{buildId}</strong>
           </div>
         </div>
       </section>
@@ -1225,6 +1232,7 @@ function App() {
         <div className="sidebar-footer">
           <span>{ffmpegReady ? 'FFmpeg environment ready.' : 'FFmpeg setup required.'}</span>
           <strong>Made with ❤️ by Nordik</strong>
+          <span>{buildId}</span>
         </div>
       </aside>
 
