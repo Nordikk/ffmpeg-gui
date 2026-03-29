@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
 
@@ -51,7 +52,7 @@ type DropDebugState = {
   pathCount: number;
   firstPath: string;
   timestamp: string;
-  source: 'none' | 'tauri' | 'win32';
+  source: 'none' | 'webview' | 'win32';
 };
 
 type NativeFileDropPayload = {
@@ -418,7 +419,7 @@ function App() {
   }, [durationSeconds, keyframes, snapToKeyframes, videoCodec, selectionStartSeconds, selectionEndSeconds]);
 
   useEffect(() => {
-    let unlistenWindow: undefined | (() => void);
+    let unlistenWebview: undefined | (() => void);
     let unlistenFallback: undefined | (() => void);
 
     function applyDropDebug(
@@ -450,10 +451,13 @@ function App() {
     }
 
     async function bindDragDropListener() {
-      unlistenWindow = await getCurrentWindow().onDragDropEvent((event) => {
+      const currentWebview = getCurrentWebview();
+      const currentWebviewWindow = getCurrentWebviewWindow();
+
+      unlistenWebview = await currentWebview.onDragDropEvent((event) => {
         if (event.payload.type === 'enter') {
           setIsDropTargetActive(true);
-          applyDropDebug('tauri', 'enter', event.payload.paths);
+          applyDropDebug('webview', 'enter', event.payload.paths);
           return;
         }
 
@@ -462,20 +466,20 @@ function App() {
             ...current,
             lastEvent: 'over',
             timestamp: new Date().toISOString(),
-            source: 'tauri'
+            source: 'webview'
           }));
           return;
         }
 
         if (event.payload.type === 'leave') {
           setIsDropTargetActive(false);
-          applyDropDebug('tauri', 'leave');
+          applyDropDebug('webview', 'leave');
           return;
         }
 
         if (event.payload.type === 'drop') {
           setIsDropTargetActive(false);
-          applyDropDebug('tauri', 'drop', event.payload.paths);
+          applyDropDebug('webview', 'drop', event.payload.paths);
           const [firstPath] = event.payload.paths;
 
           if (firstPath) {
@@ -484,7 +488,7 @@ function App() {
         }
       });
 
-      unlistenFallback = await getCurrentWindow().listen<NativeFileDropPayload>('native-file-drop', (event) => {
+      unlistenFallback = await currentWebviewWindow.listen<NativeFileDropPayload>('native-file-drop', (event) => {
         if (event.payload.kind !== 'drop') {
           return;
         }
@@ -503,7 +507,7 @@ function App() {
 
     return () => {
       setIsDropTargetActive(false);
-      unlistenWindow?.();
+      unlistenWebview?.();
       unlistenFallback?.();
     };
   }, [activeTool, convertContainer]);
