@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
 
@@ -391,7 +391,7 @@ function App() {
     let unlisten: undefined | (() => void);
 
     async function bindDragDropListener() {
-      unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
+      unlisten = await getCurrentWebview().onDragDropEvent((event) => {
         if (event.payload.type === 'enter') {
           setIsDropTargetActive(true);
           return;
@@ -725,6 +725,10 @@ function App() {
     const ffmpegStatus = toolStatus?.ffmpeg;
     const ffprobeStatus = toolStatus?.ffprobe;
     const ready = Boolean(ffmpegStatus?.available && ffprobeStatus?.available);
+
+    if (ready) {
+      return null;
+    }
 
     return (
       <section className={`startup-panel${ready ? '' : ' warning'}`}>
