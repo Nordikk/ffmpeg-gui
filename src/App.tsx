@@ -44,6 +44,13 @@ type JobRecord = {
   detail: string;
 };
 
+type DropDebugState = {
+  lastEvent: 'idle' | 'enter' | 'over' | 'leave' | 'drop';
+  pathCount: number;
+  firstPath: string;
+  timestamp: string;
+};
+
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
   'lossless-cut': {
     title: 'Lossless Cut',
@@ -246,6 +253,12 @@ function App() {
   const [convertLog, setConvertLog] = useState('');
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [isDropTargetActive, setIsDropTargetActive] = useState(false);
+  const [dropDebug, setDropDebug] = useState<DropDebugState>({
+    lastEvent: 'idle',
+    pathCount: 0,
+    firstPath: '',
+    timestamp: ''
+  });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineTrackRef = useRef<HTMLDivElement | null>(null);
@@ -394,17 +407,44 @@ function App() {
       unlisten = await getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type === 'enter') {
           setIsDropTargetActive(true);
+          setDropDebug({
+            lastEvent: 'enter',
+            pathCount: event.payload.paths.length,
+            firstPath: event.payload.paths[0] || '',
+            timestamp: new Date().toISOString()
+          });
+          return;
+        }
+
+        if (event.payload.type === 'over') {
+          setDropDebug((current) => ({
+            ...current,
+            lastEvent: 'over',
+            timestamp: new Date().toISOString()
+          }));
           return;
         }
 
         if (event.payload.type === 'leave') {
           setIsDropTargetActive(false);
+          setDropDebug({
+            lastEvent: 'leave',
+            pathCount: 0,
+            firstPath: '',
+            timestamp: new Date().toISOString()
+          });
           return;
         }
 
         if (event.payload.type === 'drop') {
           setIsDropTargetActive(false);
           const [firstPath] = event.payload.paths;
+          setDropDebug({
+            lastEvent: 'drop',
+            pathCount: event.payload.paths.length,
+            firstPath: firstPath || '',
+            timestamp: new Date().toISOString()
+          });
 
           if (!firstPath) {
             return;
@@ -792,6 +832,35 @@ function App() {
         ) : (
           <div className="empty-jobs">No jobs yet.</div>
         )}
+      </section>
+    );
+  }
+
+  function renderDropDebug() {
+    return (
+      <section className="debug-panel">
+        <div className="section-header">
+          <h3>Drop Debug</h3>
+          <span>{dropDebug.lastEvent}</span>
+        </div>
+        <div className="debug-grid">
+          <div>
+            <span>Last event</span>
+            <strong>{dropDebug.lastEvent}</strong>
+          </div>
+          <div>
+            <span>Paths</span>
+            <strong>{dropDebug.pathCount}</strong>
+          </div>
+          <div>
+            <span>First path</span>
+            <strong>{dropDebug.firstPath || '-'}</strong>
+          </div>
+          <div>
+            <span>Timestamp</span>
+            <strong>{dropDebug.timestamp ? formatDateTime(dropDebug.timestamp) : '-'}</strong>
+          </div>
+        </div>
       </section>
     );
   }
@@ -1205,6 +1274,7 @@ function App() {
         {activeTool === 'smart-convert' ? renderConvert() : null}
         {activeTool !== 'lossless-cut' && activeTool !== 'smart-convert' ? renderPlaceholder() : null}
 
+        {renderDropDebug()}
         {renderJobs()}
       </main>
     </div>

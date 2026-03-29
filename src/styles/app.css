@@ -160,7 +160,8 @@ label span,
 }
 
 .startup-panel,
-.jobs-panel {
+.jobs-panel,
+.debug-panel {
   margin-bottom: 14px;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -473,6 +474,12 @@ select {
   gap: 10px;
 }
 
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .job-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -482,12 +489,14 @@ select {
 }
 
 .job-row strong,
-.startup-grid strong {
+.startup-grid strong,
+.debug-grid strong {
   font-size: 0.92rem;
 }
 
 .job-row span,
 .startup-grid span,
+.debug-grid span,
 .empty-jobs {
   color: var(--text-muted);
   word-break: break-word;
@@ -533,6 +542,7 @@ select {
   .header-actions,
   .preview-actions,
   .startup-grid,
+  .debug-grid,
   .time-fields,
   .compact-fields,
   .form-grid {
