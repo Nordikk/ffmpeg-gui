@@ -2,6 +2,7 @@ use rfd::FileDialog;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::Emitter;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +30,21 @@ struct ToolStatus {
 #[serde(rename_all = "camelCase")]
 struct KeyframeProbe {
     keyframes: Vec<f64>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropPosition {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeFileDropPayload {
+    kind: String,
+    paths: Vec<String>,
+    position: Option<DropPosition>,
 }
 
 #[derive(serde::Deserialize)]
@@ -250,6 +266,50 @@ fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .on_webview_event(|webview, event| {
+            if let tauri::WebviewEvent::DragDrop(event) = event {
+                let payload = match event {
+                    tauri::DragDropEvent::Enter { paths, position } => NativeFileDropPayload {
+                        kind: "enter".to_string(),
+                        paths: paths
+                            .iter()
+                            .map(|path| path.to_string_lossy().to_string())
+                            .collect(),
+                        position: Some(DropPosition {
+                            x: position.x,
+                            y: position.y,
+                        }),
+                    },
+                    tauri::DragDropEvent::Over { position } => NativeFileDropPayload {
+                        kind: "over".to_string(),
+                        paths: Vec::new(),
+                        position: Some(DropPosition {
+                            x: position.x,
+                            y: position.y,
+                        }),
+                    },
+                    tauri::DragDropEvent::Drop { paths, position } => NativeFileDropPayload {
+                        kind: "drop".to_string(),
+                        paths: paths
+                            .iter()
+                            .map(|path| path.to_string_lossy().to_string())
+                            .collect(),
+                        position: Some(DropPosition {
+                            x: position.x,
+                            y: position.y,
+                        }),
+                    },
+                    tauri::DragDropEvent::Leave => NativeFileDropPayload {
+                        kind: "leave".to_string(),
+                        paths: Vec::new(),
+                        position: None,
+                    },
+                    _ => return,
+                };
+
+                let _ = webview.window().emit("native-file-drop", payload);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             check_tool_status,
             open_file,

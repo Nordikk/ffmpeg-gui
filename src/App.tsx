@@ -53,6 +53,15 @@ type DropDebugState = {
   timestamp: string;
 };
 
+type NativeFileDropPayload = {
+  kind: DropDebugState['lastEvent'];
+  paths: string[];
+  position?: {
+    x: number;
+    y: number;
+  } | null;
+};
+
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
   'lossless-cut': {
     title: 'Lossless Cut',
@@ -409,8 +418,8 @@ function App() {
     let unlisten: undefined | (() => void);
 
     async function bindDragDropListener() {
-      unlisten = await getCurrentWindow().onDragDropEvent((event) => {
-        if (event.payload.type === 'enter') {
+      unlisten = await getCurrentWindow().listen<NativeFileDropPayload>('native-file-drop', (event) => {
+        if (event.payload.kind === 'enter') {
           setIsDropTargetActive(true);
           setDropDebug({
             lastEvent: 'enter',
@@ -421,7 +430,7 @@ function App() {
           return;
         }
 
-        if (event.payload.type === 'over') {
+        if (event.payload.kind === 'over') {
           setDropDebug((current) => ({
             ...current,
             lastEvent: 'over',
@@ -430,7 +439,7 @@ function App() {
           return;
         }
 
-        if (event.payload.type === 'leave') {
+        if (event.payload.kind === 'leave') {
           setIsDropTargetActive(false);
           setDropDebug({
             lastEvent: 'leave',
@@ -441,7 +450,7 @@ function App() {
           return;
         }
 
-        if (event.payload.type === 'drop') {
+        if (event.payload.kind === 'drop') {
           setIsDropTargetActive(false);
           const [firstPath] = event.payload.paths;
           setDropDebug({
