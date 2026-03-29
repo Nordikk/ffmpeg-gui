@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
 
@@ -391,7 +391,7 @@ function App() {
     let unlisten: undefined | (() => void);
 
     async function bindDragDropListener() {
-      unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+      unlisten = await getCurrentWindow().onDragDropEvent((event) => {
         if (event.payload.type === 'enter') {
           setIsDropTargetActive(true);
           return;
@@ -440,22 +440,7 @@ function App() {
 
     function handleDrop(event: DragEvent) {
       event.preventDefault();
-      setIsDropTargetActive(false);
-
-      const droppedFiles = Array.from(event.dataTransfer?.files ?? []);
-      const firstFile = droppedFiles[0] as File & { path?: string };
-      const droppedPath = firstFile?.path;
-
-      if (droppedPath) {
-        handleDroppedPath(droppedPath);
-        return;
-      }
-
-      if (activeTool === 'smart-convert') {
-        setConvertError(droppedFiles.length ? 'Drop received, but no local file path was available.' : 'No file was dropped.');
-      } else {
-        setError(droppedFiles.length ? 'Drop received, but no local file path was available.' : 'No file was dropped.');
-      }
+      // Native Tauri drop events provide the real file paths.
     }
 
     window.addEventListener('dragover', handleDragOver);
