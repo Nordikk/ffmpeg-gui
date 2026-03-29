@@ -4,9 +4,31 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CommandResult {
     command: String,
     log: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BinaryStatus {
+    available: bool,
+    version: String,
+    error: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolStatus {
+    ffmpeg: BinaryStatus,
+    ffprobe: BinaryStatus,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyframeProbe {
+    keyframes: Vec<f64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -39,6 +61,14 @@ fn format_output_path(input_path: &str, extension: &str, suffix: Option<&str>) -
     Some(parent.join(format!("{}{}.{}", stem, suffix, extension)))
 }
 
+fn shell_quote(value: &str) -> String {
+    if value.contains(' ') || value.contains('"') {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> {
     let output = Command::new(command)
         .args(args)
@@ -50,20 +80,55 @@ fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> 
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Ok(CommandResult {
             command: std::iter::once(command.to_string())
-                .chain(args.iter().cloned())
+                .chain(args.iter().map(|arg| shell_quote(arg)))
                 .collect::<Vec<_>>()
                 .join(" "),
             log: if stderr.is_empty() { stdout } else { stderr },
         });
     }
 
-    Err(String::from_utf8_lossy(&output.stderr).to_string())
+    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
+
+fn probe_binary(binary: &str) -> BinaryStatus {
+    match Command::new(binary).arg("-version").output() {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            let version = text.lines().next().unwrap_or_default().trim().to_string();
+            BinaryStatus {
+                available: true,
+                version,
+                error: String::new(),
+            }
+        }
+        Ok(output) => BinaryStatus {
+            available: false,
+            version: String::new(),
+            error: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        },
+        Err(error) => BinaryStatus {
+            available: false,
+            version: String::new(),
+            error: error.to_string(),
+        },
+    }
+}
+
+#[tauri::command]
+fn check_tool_status() -> ToolStatus {
+    ToolStatus {
+        ffmpeg: probe_binary("ffmpeg"),
+        ffprobe: probe_binary("ffprobe"),
+    }
 }
 
 #[tauri::command]
 fn open_file() -> Option<String> {
     FileDialog::new()
-        .add_filter("Media files", &["mp4", "mkv", "mov", "avi", "mp3", "wav", "m4a", "flac", "webm"])
+        .add_filter(
+            "Media files",
+            &["mp4", "mkv", "mov", "avi", "mp3", "wav", "m4a", "flac", "webm"],
+        )
         .pick_file()
         .map(|path| path.to_string_lossy().to_string())
 }
@@ -72,7 +137,10 @@ fn open_file() -> Option<String> {
 fn save_file(source_path: String, extension: String, suffix: Option<String>) -> Option<String> {
     let default_path = format_output_path(&source_path, &extension, suffix.as_deref())?;
     FileDialog::new()
-        .add_filter(format!("{} file", extension.to_uppercase()), &[extension.as_str()])
+        .add_filter(
+            format!("{} file", extension.to_uppercase()),
+            &[extension.as_str()],
+        )
         .set_file_name(default_path.file_name()?.to_string_lossy().as_ref())
         .set_directory(default_path.parent()?)
         .save_file()
@@ -93,6 +161,33 @@ fn probe_media(file_path: String) -> Result<serde_json::Value, String> {
 
     let result = run_command("ffprobe", &args)?;
     serde_json::from_str(&result.log).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn probe_keyframes(file_path: String) -> Result<KeyframeProbe, String> {
+    let args = vec![
+        "-v".to_string(),
+        "error".to_string(),
+        "-skip_frame".to_string(),
+        "nokey".to_string(),
+        "-select_streams".to_string(),
+        "v:0".to_string(),
+        "-show_entries".to_string(),
+        "frame=pts_time".to_string(),
+        "-of".to_string(),
+        "csv=p=0".to_string(),
+        file_path,
+    ];
+
+    let result = run_command("ffprobe", &args)?;
+    let keyframes = result
+        .log
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .take(10_000)
+        .collect::<Vec<_>>();
+
+    Ok(KeyframeProbe { keyframes })
 }
 
 #[tauri::command]
@@ -155,7 +250,15 @@ fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_file, save_file, probe_media, run_lossless_cut, run_convert])
+        .invoke_handler(tauri::generate_handler![
+            check_tool_status,
+            open_file,
+            save_file,
+            probe_media,
+            probe_keyframes,
+            run_lossless_cut,
+            run_convert
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

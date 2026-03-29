@@ -48,9 +48,36 @@ code {
 }
 
 .app-shell {
+  position: relative;
   display: grid;
   grid-template-columns: 220px 1fr;
   min-height: 100vh;
+}
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 13, 17, 0.68);
+  pointer-events: none;
+}
+
+.drop-overlay-card {
+  display: grid;
+  gap: 6px;
+  min-width: 280px;
+  padding: 20px 24px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: rgba(27, 32, 39, 0.96);
+  text-align: center;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+
+.drop-overlay-card span {
+  color: var(--text-muted);
 }
 
 .sidebar {
@@ -117,6 +144,45 @@ label span,
 
 .workspace {
   padding: 16px;
+}
+
+.startup-panel,
+.jobs-panel {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.startup-panel.warning {
+  border-color: rgba(255, 187, 92, 0.45);
+  background: #221d14;
+}
+
+.startup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.startup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.startup-grid div,
+.job-row div {
+  display: grid;
+  gap: 4px;
+}
+
+.setup-note {
+  margin: 10px 0 0;
+  color: var(--text-muted);
 }
 
 .workspace-header {
@@ -237,6 +303,16 @@ label span,
   width: 2px;
   background: #f3f6f9;
   pointer-events: none;
+  z-index: 2;
+}
+
+.timeline-keyframe {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.22);
+  pointer-events: none;
 }
 
 .timeline-selection {
@@ -246,14 +322,36 @@ label span,
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: rgba(77, 163, 255, 0.18);
+  z-index: 3;
 }
 
 .timeline-selection.draggable {
+  display: grid;
+  grid-template-columns: 10px 1fr 10px;
+  align-items: stretch;
   cursor: grab;
 }
 
 .timeline-selection.draggable:active {
   cursor: grabbing;
+}
+
+.timeline-selection-body {
+  min-width: 0;
+}
+
+.timeline-handle {
+  background: rgba(77, 163, 255, 0.9);
+}
+
+.timeline-handle.start {
+  cursor: ew-resize;
+  border-right: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+.timeline-handle.end {
+  cursor: ew-resize;
+  border-left: 1px solid rgba(0, 0, 0, 0.25);
 }
 
 .time-fields,
@@ -281,6 +379,16 @@ label span,
 label {
   display: grid;
   gap: 5px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle input {
+  width: auto;
 }
 
 .path-list strong {
@@ -347,6 +455,39 @@ select {
   background: rgba(255, 123, 123, 0.1);
 }
 
+.job-list {
+  display: grid;
+  gap: 10px;
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.job-row strong,
+.startup-grid strong {
+  font-size: 0.92rem;
+}
+
+.job-row span,
+.startup-grid span,
+.empty-jobs {
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.job-row.status-error strong {
+  color: #ffd0d0;
+}
+
+.job-row.status-done strong {
+  color: #c6f0d0;
+}
+
 .placeholder-panel {
   padding: 14px;
 }
@@ -391,10 +532,15 @@ select {
   .preview-toolbar,
   .header-actions,
   .preview-actions,
+  .startup-grid,
   .time-fields,
   .compact-fields,
   .form-grid {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .job-row {
     grid-template-columns: 1fr;
   }
 }

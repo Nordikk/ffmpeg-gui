@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
 
@@ -22,10 +23,31 @@ type ProbeResult = {
   };
 };
 
+type ToolBinaryStatus = {
+  available: boolean;
+  version: string;
+  error: string;
+};
+
+type ToolStatus = {
+  ffmpeg: ToolBinaryStatus;
+  ffprobe: ToolBinaryStatus;
+};
+
+type JobRecord = {
+  id: string;
+  kind: 'cut' | 'convert';
+  source: string;
+  output: string;
+  status: 'Running' | 'Done' | 'Error';
+  startedAt: string;
+  detail: string;
+};
+
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
   'lossless-cut': {
     title: 'Lossless Cut',
-    description: 'Trim a source file with preview and stream copy options.'
+    description: 'Trim a source file with preview, keyframe snapping, and stream copy options.'
   },
   'smart-convert': {
     title: 'Convert',
@@ -161,8 +183,37 @@ function buildConvertCommandPreview(
   return parts.join(' ');
 }
 
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
+
+function nearestKeyframe(value: number, keyframes: number[]) {
+  if (!keyframes.length) {
+    return value;
+  }
+
+  let best = keyframes[0];
+  let bestDistance = Math.abs(best - value);
+
+  for (const keyframe of keyframes) {
+    const distance = Math.abs(keyframe - value);
+    if (distance < bestDistance) {
+      best = keyframe;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
 function App() {
   const [activeTool, setActiveTool] = useState<ToolId>('lossless-cut');
+  const [toolStatus, setToolStatus] = useState<ToolStatus | null>(null);
 
   const [sourcePath, setSourcePath] = useState('');
   const [outputPath, setOutputPath] = useState('');
@@ -177,6 +228,8 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [lastLog, setLastLog] = useState('');
   const [previewTime, setPreviewTime] = useState(0);
+  const [keyframes, setKeyframes] = useState<number[]>([]);
+  const [snapToKeyframes, setSnapToKeyframes] = useState(true);
 
   const [convertSourcePath, setConvertSourcePath] = useState('');
   const [convertOutputPath, setConvertOutputPath] = useState('');
@@ -191,10 +244,14 @@ function App() {
   const [convertError, setConvertError] = useState('');
   const [isConvertBusy, setIsConvertBusy] = useState(false);
   const [convertLog, setConvertLog] = useState('');
+  const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [isDropTargetActive, setIsDropTargetActive] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineTrackRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef({ active: false, startX: 0, startStart: 0, startEnd: 0 });
+  const dragRef = useRef<{ active: false } | { active: true; mode: 'move' | 'start' | 'end'; startX: number; startStart: number; startEnd: number }>({
+    active: false
+  });
 
   const durationSeconds = Number(probe?.format?.duration || 0);
   const durationLabel = secondsToTimestamp(durationSeconds);
@@ -223,6 +280,13 @@ function App() {
     convertAudioBitrate
   );
   const activeModule = moduleDescriptions[activeTool];
+  const ffmpegReady = Boolean(toolStatus?.ffmpeg.available && toolStatus?.ffprobe.available);
+
+  useEffect(() => {
+    void invoke<ToolStatus>('check_tool_status').then(setToolStatus).catch(() => {
+      setToolStatus(null);
+    });
+  }, []);
 
   useEffect(() => {
     if (preset === 'Lossless Trim') {
@@ -281,16 +345,37 @@ function App() {
 
       const deltaFraction = (event.clientX - dragRef.current.startX) / trackRect.width;
       const deltaSeconds = deltaFraction * durationSeconds;
-      const span = dragRef.current.startEnd - dragRef.current.startStart;
-      const nextStart = clamp(dragRef.current.startStart + deltaSeconds, 0, Math.max(durationSeconds - span, 0));
-      const nextEnd = nextStart + span;
 
-      setStart(secondsToTimestamp(nextStart));
+      if (dragRef.current.mode === 'move') {
+        const span = dragRef.current.startEnd - dragRef.current.startStart;
+        const nextStart = clamp(dragRef.current.startStart + deltaSeconds, 0, Math.max(durationSeconds - span, 0));
+        const nextEnd = nextStart + span;
+
+        setStart(secondsToTimestamp(nextStart));
+        setEnd(secondsToTimestamp(nextEnd));
+        return;
+      }
+
+      if (dragRef.current.mode === 'start') {
+        const nextStart = clamp(dragRef.current.startStart + deltaSeconds, 0, Math.max(dragRef.current.startEnd - 0.1, 0));
+        setStart(secondsToTimestamp(nextStart));
+        return;
+      }
+
+      const nextEnd = clamp(dragRef.current.startEnd + deltaSeconds, dragRef.current.startStart + 0.1, durationSeconds);
       setEnd(secondsToTimestamp(nextEnd));
     }
 
     function handlePointerUp() {
-      dragRef.current.active = false;
+      if (!dragRef.current.active) {
+        return;
+      }
+
+      dragRef.current = { active: false };
+
+      if (snapToKeyframes && videoCodec === 'copy' && keyframes.length) {
+        snapSelectionToKeyframes();
+      }
     }
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -300,22 +385,89 @@ function App() {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [durationSeconds]);
+  }, [durationSeconds, keyframes, snapToKeyframes, videoCodec, selectionStartSeconds, selectionEndSeconds]);
 
-  async function handleOpenFile() {
+  useEffect(() => {
+    let unlisten: undefined | (() => void);
+
+    async function bindDragDropListener() {
+      unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
+        if (event.payload.type === 'enter') {
+          setIsDropTargetActive(true);
+          return;
+        }
+
+        if (event.payload.type === 'leave') {
+          setIsDropTargetActive(false);
+          return;
+        }
+
+        if (event.payload.type === 'drop') {
+          setIsDropTargetActive(false);
+          const [firstPath] = event.payload.paths;
+
+          if (!firstPath) {
+            return;
+          }
+
+          if (activeTool === 'smart-convert') {
+            void loadConvertFile(firstPath);
+            return;
+          }
+
+          void loadLosslessFile(firstPath);
+        }
+      });
+    }
+
+    void bindDragDropListener();
+
+    return () => {
+      setIsDropTargetActive(false);
+      unlisten?.();
+    };
+  }, [activeTool, convertContainer]);
+
+  function addJob(kind: JobRecord['kind'], source: string, output: string, detail: string) {
+    const id = `${kind}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const nextJob: JobRecord = {
+      id,
+      kind,
+      source,
+      output,
+      status: 'Running',
+      startedAt: new Date().toISOString(),
+      detail
+    };
+
+    setJobs((current) => [nextJob, ...current].slice(0, 12));
+    return id;
+  }
+
+  function updateJob(id: string, statusValue: JobRecord['status'], detail: string) {
+    setJobs((current) =>
+      current.map((job) =>
+        job.id === id
+          ? {
+              ...job,
+              status: statusValue,
+              detail
+            }
+          : job
+      )
+    );
+  }
+
+  async function loadLosslessFile(selectedPath: string) {
     setError('');
     setIsBusy(true);
     setStatus('Loading...');
 
     try {
-      const selectedPath = await invoke<string | null>('open_file');
-
-      if (!selectedPath) {
-        setStatus('Cancelled');
-        return;
-      }
-
-      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
+      const [result, keyframeProbe] = await Promise.all([
+        invoke<ProbeResult>('probe_media', { filePath: selectedPath }),
+        invoke<{ keyframes: number[] }>('probe_keyframes', { filePath: selectedPath })
+      ]);
       const duration = Number(result.format?.duration || 0);
       const initialEnd = secondsToTimestamp(duration);
       const extension = extensionFromPath(selectedPath);
@@ -324,6 +476,7 @@ function App() {
       setSourcePath(selectedPath);
       setOutputPath(suggestedOutput);
       setProbe(result);
+      setKeyframes(keyframeProbe.keyframes || []);
       setStart('00:00:00');
       setEnd(initialEnd);
       setPreviewTime(0);
@@ -335,6 +488,40 @@ function App() {
       setStatus('Error');
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function loadConvertFile(selectedPath: string) {
+    setConvertError('');
+    setIsConvertBusy(true);
+    setConvertStatus('Loading...');
+
+    try {
+      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
+      setConvertSourcePath(selectedPath);
+      setConvertProbe(result);
+      setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainer));
+      setConvertStatus('Ready');
+      setConvertLog('');
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      setConvertError(message);
+      setConvertStatus('Error');
+    } finally {
+      setIsConvertBusy(false);
+    }
+  }
+
+  async function handleOpenFile() {
+    try {
+      const selectedPath = await invoke<string | null>('open_file');
+
+      if (!selectedPath) {
+        return;
+      }
+
+      await loadLosslessFile(selectedPath);
+    } catch {
     }
   }
 
@@ -350,6 +537,11 @@ function App() {
   }
 
   async function handleRunLosslessCut() {
+    if (!ffmpegReady) {
+      setError('ffmpeg and ffprobe must be available before running jobs.');
+      return;
+    }
+
     if (!sourcePath || !outputPath) {
       setError('Please choose a source file and an output path first.');
       return;
@@ -366,6 +558,7 @@ function App() {
     setError('');
     setIsBusy(true);
     setStatus('Running...');
+    const jobId = addJob('cut', sourcePath, outputPath, `${start} -> ${end}`);
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_lossless_cut', {
@@ -379,39 +572,26 @@ function App() {
 
       setStatus('Done');
       setLastLog(`${result.command}\n\n${result.log}`.trim());
+      updateJob(jobId, 'Done', `${start} -> ${end}`);
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
       setError(message);
       setStatus('Error');
+      updateJob(jobId, 'Error', message);
     } finally {
       setIsBusy(false);
     }
   }
 
   async function handleOpenConvertFile() {
-    setConvertError('');
-    setIsConvertBusy(true);
-    setConvertStatus('Loading...');
-
     try {
       const selectedPath = await invoke<string | null>('open_file');
       if (!selectedPath) {
-        setConvertStatus('Cancelled');
         return;
       }
 
-      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
-      setConvertSourcePath(selectedPath);
-      setConvertProbe(result);
-      setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainer));
-      setConvertStatus('Ready');
-      setConvertLog('');
-    } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
-      setConvertError(message);
-      setConvertStatus('Error');
-    } finally {
-      setIsConvertBusy(false);
+      await loadConvertFile(selectedPath);
+    } catch {
     }
   }
 
@@ -432,6 +612,11 @@ function App() {
   }
 
   async function handleRunConvert() {
+    if (!ffmpegReady) {
+      setConvertError('ffmpeg and ffprobe must be available before running jobs.');
+      return;
+    }
+
     if (!convertSourcePath || !convertOutputPath) {
       setConvertError('Please choose a source file and an output path first.');
       return;
@@ -440,6 +625,7 @@ function App() {
     setConvertError('');
     setIsConvertBusy(true);
     setConvertStatus('Running...');
+    const jobId = addJob('convert', convertSourcePath, convertOutputPath, `${convertContainer} ${convertVideoCodec}/${convertAudioCodec}`);
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_convert', {
@@ -453,27 +639,40 @@ function App() {
 
       setConvertStatus('Done');
       setConvertLog(`${result.command}\n\n${result.log}`.trim());
+      updateJob(jobId, 'Done', `${convertContainer} ${convertVideoCodec}/${convertAudioCodec}`);
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
       setConvertError(message);
       setConvertStatus('Error');
+      updateJob(jobId, 'Error', message);
     } finally {
       setIsConvertBusy(false);
     }
   }
 
-  function handleSelectionPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+  function startDrag(mode: 'move' | 'start' | 'end', clientX: number) {
     if (durationSeconds <= 0) {
       return;
     }
 
     dragRef.current = {
       active: true,
-      startX: event.clientX,
+      mode,
+      startX: clientX,
       startStart: selectionStartSeconds,
       startEnd: selectionEndSeconds
     };
+  }
 
+  function handleSelectionPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    startDrag('move', event.clientX);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleHandlePointerDown(mode: 'start' | 'end', event: React.PointerEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    startDrag(mode, event.clientX);
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -493,6 +692,17 @@ function App() {
     setEnd(secondsToTimestamp(nextEnd));
   }
 
+  function snapSelectionToKeyframes() {
+    if (!keyframes.length || durationSeconds <= 0) {
+      return;
+    }
+
+    const snappedStart = clamp(nearestKeyframe(selectionStartSeconds, keyframes), 0, durationSeconds);
+    const snappedEnd = clamp(nearestKeyframe(selectionEndSeconds, keyframes), snappedStart + 0.1, durationSeconds);
+    setStart(secondsToTimestamp(snappedStart));
+    setEnd(secondsToTimestamp(snappedEnd));
+  }
+
   function setPreviewAsBoundary(boundary: 'start' | 'end') {
     if (durationSeconds <= 0) {
       return;
@@ -500,13 +710,15 @@ function App() {
 
     const clampedPreview = clamp(previewTime, 0, durationSeconds);
     if (boundary === 'start') {
-      const safeStart = Math.min(clampedPreview, Math.max(selectionEndSeconds - 1, 0));
-      setStart(secondsToTimestamp(safeStart));
+      const rawStart = Math.min(clampedPreview, Math.max(selectionEndSeconds - 0.1, 0));
+      const nextStart = snapToKeyframes && keyframes.length ? nearestKeyframe(rawStart, keyframes) : rawStart;
+      setStart(secondsToTimestamp(clamp(nextStart, 0, Math.max(selectionEndSeconds - 0.1, 0))));
       return;
     }
 
-    const safeEnd = Math.max(clampedPreview, selectionStartSeconds + 1);
-    setEnd(secondsToTimestamp(clamp(safeEnd, 0, durationSeconds)));
+    const rawEnd = Math.max(clampedPreview, selectionStartSeconds + 0.1);
+    const nextEnd = snapToKeyframes && keyframes.length ? nearestKeyframe(rawEnd, keyframes) : rawEnd;
+    setEnd(secondsToTimestamp(clamp(nextEnd, selectionStartSeconds + 0.1, durationSeconds)));
   }
 
   function renderComplianceNotice() {
@@ -515,6 +727,69 @@ function App() {
         <strong>FFmpeg compliance</strong>
         <p>This build calls local ffmpeg and ffprobe binaries from the system PATH and does not bundle FFmpeg.</p>
       </div>
+    );
+  }
+
+  function renderToolStatus() {
+    const ffmpegStatus = toolStatus?.ffmpeg;
+    const ffprobeStatus = toolStatus?.ffprobe;
+    const ready = Boolean(ffmpegStatus?.available && ffprobeStatus?.available);
+
+    return (
+      <section className={`startup-panel${ready ? '' : ' warning'}`}>
+        <div className="startup-row">
+          <strong>Environment</strong>
+          <span>{ready ? 'Ready' : 'Setup required'}</span>
+        </div>
+        <div className="startup-grid">
+          <div>
+            <span>ffmpeg</span>
+            <strong>{ffmpegStatus?.available ? ffmpegStatus.version : ffmpegStatus?.error || 'Not found'}</strong>
+          </div>
+          <div>
+            <span>ffprobe</span>
+            <strong>{ffprobeStatus?.available ? ffprobeStatus.version : ffprobeStatus?.error || 'Not found'}</strong>
+          </div>
+        </div>
+        {!ready ? (
+          <p className="setup-note">
+            Install FFmpeg so both <code>ffmpeg</code> and <code>ffprobe</code> are available on the system PATH, then restart the app.
+          </p>
+        ) : null}
+      </section>
+    );
+  }
+
+  function renderJobs() {
+    return (
+      <section className="jobs-panel">
+        <div className="section-header">
+          <h3>Jobs</h3>
+          <span>{jobs.length}</span>
+        </div>
+        {jobs.length ? (
+          <div className="job-list">
+            {jobs.map((job) => (
+              <div key={job.id} className={`job-row status-${job.status.toLowerCase()}`}>
+                <div>
+                  <strong>{job.kind === 'cut' ? 'Lossless Cut' : 'Convert'}</strong>
+                  <span>{fileNameFromPath(job.source)}</span>
+                </div>
+                <div>
+                  <strong>{job.status}</strong>
+                  <span>{job.detail}</span>
+                </div>
+                <div>
+                  <strong>{fileNameFromPath(job.output)}</strong>
+                  <span>{formatDateTime(job.startedAt)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-jobs">No jobs yet.</div>
+        )}
+      </section>
     );
   }
 
@@ -553,22 +828,43 @@ function App() {
             <div className="preview-toolbar">
               <strong>{secondsToTimestamp(previewTime)}</strong>
               <div className="preview-actions">
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={snapToKeyframes}
+                    onChange={(event) => setSnapToKeyframes(event.target.checked)}
+                    disabled={!keyframes.length}
+                  />
+                  <span>Snap to keyframes</span>
+                </label>
                 <button type="button" className="button" onClick={() => setPreviewAsBoundary('start')} disabled={!sourcePath}>
                   Set In
                 </button>
                 <button type="button" className="button" onClick={() => setPreviewAsBoundary('end')} disabled={!sourcePath}>
                   Set Out
                 </button>
+                <button type="button" className="button" onClick={snapSelectionToKeyframes} disabled={!keyframes.length}>
+                  Snap Now
+                </button>
               </div>
             </div>
 
             <div ref={timelineTrackRef} className="timeline-strip interactive" onClick={handleTimelineClick}>
               <div className="timeline-playhead" style={{ left: `${previewPercent}%` }} />
+              {durationSeconds > 0
+                ? keyframes.map((keyframe) => (
+                    <div key={keyframe} className="timeline-keyframe" style={{ left: `${(keyframe / durationSeconds) * 100}%` }} />
+                  ))
+                : null}
               <div
                 className="timeline-selection draggable"
                 style={{ left: `${selectionLeftPercent}%`, width: `${selectionWidthPercent}%` }}
                 onPointerDown={handleSelectionPointerDown}
-              />
+              >
+                <div className="timeline-handle start" onPointerDown={(event) => handleHandlePointerDown('start', event)} />
+                <div className="timeline-selection-body" />
+                <div className="timeline-handle end" onPointerDown={(event) => handleHandlePointerDown('end', event)} />
+              </div>
             </div>
 
             <div className="time-fields">
@@ -654,6 +950,10 @@ function App() {
                     ? `${audioStream.codec_name}${audioStream.channels ? ` ${audioStream.channels}ch` : ''}`
                     : '-'}
                 </strong>
+              </div>
+              <div>
+                <span>Keyframes</span>
+                <strong>{keyframes.length ? `${keyframes.length} indexed` : 'No video keyframes loaded'}</strong>
               </div>
             </div>
 
@@ -827,6 +1127,15 @@ function App() {
 
   return (
     <div className="app-shell">
+      {isDropTargetActive ? (
+        <div className="drop-overlay" aria-hidden="true">
+          <div className="drop-overlay-card">
+            <strong>Drop file to open</strong>
+            <span>{activeTool === 'smart-convert' ? 'Load into Convert' : 'Load into Lossless Cut'}</span>
+          </div>
+        </div>
+      ) : null}
+
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1>FFmpeg Forge</h1>
@@ -846,11 +1155,13 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <span>Uses local FFmpeg binaries.</span>
+          <span>{ffmpegReady ? 'FFmpeg environment ready.' : 'FFmpeg setup required.'}</span>
         </div>
       </aside>
 
       <main className="workspace">
+        {renderToolStatus()}
+
         <header className="workspace-header">
           <h2>{activeModule.title}</h2>
 
@@ -863,7 +1174,7 @@ function App() {
                 <button type="button" className="button" onClick={handlePickOutput} disabled={!sourcePath || isBusy}>
                   Output
                 </button>
-                <button type="button" className="button" onClick={handleRunLosslessCut} disabled={!sourcePath || isBusy}>
+                <button type="button" className="button" onClick={handleRunLosslessCut} disabled={!sourcePath || isBusy || !ffmpegReady}>
                   Run
                 </button>
               </>
@@ -882,7 +1193,7 @@ function App() {
                 >
                   Output
                 </button>
-                <button type="button" className="button" onClick={handleRunConvert} disabled={!convertSourcePath || isConvertBusy}>
+                <button type="button" className="button" onClick={handleRunConvert} disabled={!convertSourcePath || isConvertBusy || !ffmpegReady}>
                   Run
                 </button>
               </>
@@ -893,6 +1204,8 @@ function App() {
         {activeTool === 'lossless-cut' ? renderLosslessCut() : null}
         {activeTool === 'smart-convert' ? renderConvert() : null}
         {activeTool !== 'lossless-cut' && activeTool !== 'smart-convert' ? renderPlaceholder() : null}
+
+        {renderJobs()}
       </main>
     </div>
   );
