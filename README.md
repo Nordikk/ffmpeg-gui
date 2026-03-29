@@ -21,18 +21,26 @@ See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for links to the official
 ## Development
 
 - `npm install`
+- macOS local setup:
+  - `brew install rust ffmpeg`
+  - restart the terminal so `cargo`, `rustc`, `ffmpeg`, and `ffprobe` are on `PATH`
 - `npm run dev` for the frontend only
 - `npm run tauri:dev` to run the desktop app in Tauri dev mode
 
 ## Build Apps
 
 - `npm run tauri:build`
-- Windows output is written under `src-tauri/target/release/bundle/`
+- On macOS this builds a `.app` bundle only
+- Current-platform output is written under `src-tauri/target/release/bundle/`
+- Explicit macOS app build: `npm run tauri:build:mac`
+- Windows installer-only build: `npm run tauri:build:windows`
 
 ## Platform Notes
 
-- Windows builds can be produced from this Windows environment.
+- Windows development remains supported. Use `npm run tauri:build:windows` on Windows when you want the NSIS installer output.
 - A real macOS `.app` build must be created on macOS with Apple's native toolchain.
+- The default build script is platform-aware: macOS builds `.app`, Windows builds `nsis`.
+- macOS development requires local installs of Rust and FFmpeg because this project uses system `ffmpeg` / `ffprobe` from `PATH`.
 - Linux bundles should be built on Linux for the cleanest results.
 
 ## Current Features
@@ -43,14 +51,14 @@ See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for links to the official
 - Video preview inside `Lossless Cut`
 - Draggable range selection in the `Lossless Cut` timeline
 - Working `Convert` workflow with safe default presets
-- File picker and output picker
+- Working `Audio`, `Frames`, and `Batch` workflows
+- File and folder pickers
 - `ffprobe` analysis for loaded media files
 - Direct `ffmpeg` execution from the UI
-- Visible FFmpeg compliance notice in the app
+- Native drag and drop with manual-path fallback
 
 ## Planned Next Steps
 
-1. Add draggable trim handles for resizing the selected cut range
-2. Add real frame stepping and keyframe snapping
+1. Remove the `Drop Debug` panel once drag and drop is confirmed stable
+2. Keep polishing the desktop UX and module workflows
 3. Bundle `ffmpeg` and `ffprobe` only with a full licensing/compliance workflow in place
-4. Implement the remaining modules such as Audio, Frames, and Batch

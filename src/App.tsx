@@ -133,13 +133,55 @@ function fileNameFromPath(filePath: string) {
   return parts[parts.length - 1] || filePath;
 }
 
+function isWindowsPath(filePath: string) {
+  return /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\');
+}
+
+function pathSeparatorFor(filePath: string) {
+  return isWindowsPath(filePath) ? '\\' : '/';
+}
+
+function directoryFromPath(filePath: string) {
+  const normalized = filePath.replaceAll('\\', '/');
+  const lastSeparator = normalized.lastIndexOf('/');
+
+  if (lastSeparator < 0) {
+    return '';
+  }
+
+  if (lastSeparator === 0) {
+    return '/';
+  }
+
+  return normalized.slice(0, lastSeparator);
+}
+
+function joinPath(basePath: string, childName: string, pathStyleSample = basePath || childName) {
+  if (!basePath) {
+    return childName;
+  }
+
+  const separator = pathSeparatorFor(pathStyleSample);
+  const trimmedBase = basePath.endsWith('/') || basePath.endsWith('\\') ? basePath.slice(0, -1) : basePath;
+  const trimmedChild = childName.replace(/^[/\\]+/, '');
+  return `${trimmedBase}${separator}${trimmedChild}`;
+}
+
+function stripExtension(filePath: string) {
+  return filePath.replace(/\.[^.]+$/, '');
+}
+
 function extensionFromPath(filePath: string) {
   const match = /\.([^.]+)$/.exec(filePath);
   return match?.[1]?.toLowerCase() || 'mp4';
 }
 
 function replaceExtension(filePath: string, suffix: string, extension: string) {
-  return filePath.replace(/\.[^.]+$/, `${suffix}.${extension}`);
+  if (/\.[^.]+$/.test(filePath)) {
+    return filePath.replace(/\.[^.]+$/, `${suffix}.${extension}`);
+  }
+
+  return `${filePath}${suffix}.${extension}`;
 }
 
 function filePathToVideoUrl(filePath: string) {
@@ -164,7 +206,7 @@ function decodeFileUri(value: string) {
     const url = new URL(value);
     const decodedPath = decodeURIComponent(url.pathname || '');
 
-    if (url.hostname) {
+    if (url.hostname && url.hostname !== 'localhost') {
       return `\\\\${url.hostname}${decodedPath.replaceAll('/', '\\')}`;
     }
 
@@ -172,7 +214,7 @@ function decodeFileUri(value: string) {
       return decodedPath.slice(1).replaceAll('/', '\\');
     }
 
-    return decodedPath.replaceAll('/', '\\');
+    return decodedPath;
   } catch {
     return '';
   }
@@ -195,6 +237,10 @@ function extractPathsFromDroppedText(rawText: string) {
         }
 
         if (/^[a-zA-Z]:[\\/]/.test(entry) || entry.startsWith('\\\\')) {
+          return entry;
+        }
+
+        if (entry.startsWith('/')) {
           return entry;
         }
 
@@ -358,7 +404,7 @@ function buildFrameCommandPreview(
     parts.push('-q:v', quality);
   }
 
-  parts.push(`"${outputDir}\\frame_%06d.${imageFormat}"`);
+  parts.push(`"${joinPath(outputDir, `frame_%06d.${imageFormat}`)}"`);
   return parts.join(' ');
 }
 
@@ -992,7 +1038,7 @@ function App() {
   async function loadLosslessFile(selectedPath: string) {
     const requestId = ++losslessLoadRequestRef.current;
     const extension = extensionFromPath(selectedPath);
-    const suggestedOutput = selectedPath.replace(/\.[^.]+$/, `_trim.${extension}`);
+    const suggestedOutput = replaceExtension(selectedPath, '_trim', extension);
 
     setError('');
     setIsBusy(true);
@@ -1105,12 +1151,11 @@ function App() {
 
     try {
       const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
-      const normalized = selectedPath.replaceAll('\\', '/');
-      const baseDirectory = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '';
-      const baseName = fileNameFromPath(selectedPath).replace(/\.[^.]+$/, '');
+      const baseDirectory = directoryFromPath(selectedPath);
+      const baseName = stripExtension(fileNameFromPath(selectedPath));
       setFrameSourcePath(selectedPath);
       setFrameProbe(result);
-      setFrameOutputDir(`${baseDirectory}${baseDirectory ? '/' : ''}${baseName}_frames`.replaceAll('/', '\\'));
+      setFrameOutputDir(joinPath(baseDirectory, `${baseName}_frames`, selectedPath));
       setManualFramePath(selectedPath);
       setFrameStatus('Ready');
       setFrameLog('');

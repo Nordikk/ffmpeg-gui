@@ -31,7 +31,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
     "category": "Utility",
     "shortDescription": "Desktop FFmpeg GUI",
     "copyright": "Copyright (c) 2026"
