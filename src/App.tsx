@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+
+import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, queueJobs, tools } from './data/appData';
 
 type ToolId = (typeof tools)[number]['id'];
@@ -24,7 +25,7 @@ type ProbeResult = {
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
   'lossless-cut': {
     title: 'Lossless Cut',
-    description: 'Load a file, inspect it with ffprobe, set in/out points, and run ffmpeg directly.'
+    description: 'Load a file, inspect it with ffprobe, drag the selected range on the timeline, and run ffmpeg directly.'
   },
   'smart-convert': {
     title: 'Convert',
@@ -46,6 +47,10 @@ const moduleDescriptions: Record<ToolId, { title: string; description: string }>
 
 function padTime(value: number) {
   return String(value).padStart(2, '0');
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function secondsToTimestamp(totalSeconds: number) {
@@ -94,6 +99,15 @@ function extensionFromPath(filePath: string) {
 
 function replaceExtension(filePath: string, suffix: string, extension: string) {
   return filePath.replace(/\.[^.]+$/, `${suffix}.${extension}`);
+}
+
+function filePathToVideoUrl(filePath: string) {
+  if (!filePath) {
+    return '';
+  }
+
+  const normalized = filePath.replaceAll('\\', '/');
+  return `file:///${encodeURI(normalized)}`;
 }
 
 function buildLosslessCommandPreview(
@@ -162,6 +176,7 @@ function App() {
   const [error, setError] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [lastLog, setLastLog] = useState('');
+  const [previewTime, setPreviewTime] = useState(0);
 
   const [convertSourcePath, setConvertSourcePath] = useState('');
   const [convertOutputPath, setConvertOutputPath] = useState('');
@@ -177,12 +192,23 @@ function App() {
   const [isConvertBusy, setIsConvertBusy] = useState(false);
   const [convertLog, setConvertLog] = useState('');
 
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const timelineTrackRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef({ active: false, startX: 0, startStart: 0, startEnd: 0 });
+
   const durationSeconds = Number(probe?.format?.duration || 0);
   const durationLabel = secondsToTimestamp(durationSeconds);
   const videoStream = probe?.streams?.find((stream) => stream.codec_type === 'video');
   const audioStream = probe?.streams?.find((stream) => stream.codec_type === 'audio');
   const outputExtension = extensionFromPath(outputPath || sourcePath || 'output.mp4');
   const commandPreview = buildLosslessCommandPreview(sourcePath, outputPath, start, end, videoCodec, audioCodec);
+  const selectionStartSeconds = clamp(timestampToSeconds(start), 0, durationSeconds || 0);
+  const selectionEndSeconds = clamp(timestampToSeconds(end), 0, durationSeconds || 0);
+  const selectionSpan = Math.max(selectionEndSeconds - selectionStartSeconds, 0);
+  const selectionLeftPercent = durationSeconds > 0 ? (selectionStartSeconds / durationSeconds) * 100 : 0;
+  const selectionWidthPercent = durationSeconds > 0 ? (selectionSpan / durationSeconds) * 100 : 0;
+  const previewPercent = durationSeconds > 0 ? (clamp(previewTime, 0, durationSeconds) / durationSeconds) * 100 : 0;
+  const videoPreviewUrl = filePathToVideoUrl(sourcePath);
 
   const convertDurationSeconds = Number(convertProbe?.format?.duration || 0);
   const convertDurationLabel = secondsToTimestamp(convertDurationSeconds);
@@ -230,7 +256,56 @@ function App() {
     if (convertSourcePath) {
       setConvertOutputPath(replaceExtension(convertSourcePath, '_convert', selectedPreset.container));
     }
-  }, [convertPreset]);
+  }, [convertPreset, convertSourcePath]);
+
+  useEffect(() => {
+    if (!videoRef.current || !sourcePath) {
+      return;
+    }
+
+    const nextTime = clamp(selectionStartSeconds, 0, durationSeconds || selectionStartSeconds);
+    if (Number.isFinite(nextTime)) {
+      try {
+        videoRef.current.currentTime = nextTime;
+        setPreviewTime(nextTime);
+      } catch {
+      }
+    }
+  }, [sourcePath, selectionStartSeconds, durationSeconds]);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      if (!dragRef.current.active || !timelineTrackRef.current || durationSeconds <= 0) {
+        return;
+      }
+
+      const trackRect = timelineTrackRef.current.getBoundingClientRect();
+      if (trackRect.width <= 0) {
+        return;
+      }
+
+      const deltaFraction = (event.clientX - dragRef.current.startX) / trackRect.width;
+      const deltaSeconds = deltaFraction * durationSeconds;
+      const span = dragRef.current.startEnd - dragRef.current.startStart;
+      const nextStart = clamp(dragRef.current.startStart + deltaSeconds, 0, Math.max(durationSeconds - span, 0));
+      const nextEnd = nextStart + span;
+
+      setStart(secondsToTimestamp(nextStart));
+      setEnd(secondsToTimestamp(nextEnd));
+    }
+
+    function handlePointerUp() {
+      dragRef.current.active = false;
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [durationSeconds]);
 
   async function handleOpenFile() {
     if (!window.desktop) {
@@ -261,6 +336,7 @@ function App() {
       setProbe(result);
       setStart('00:00:00');
       setEnd(initialEnd);
+      setPreviewTime(0);
       setStatus('File analyzed');
       setLastLog('');
     } catch (caughtError) {
@@ -406,6 +482,53 @@ function App() {
     }
   }
 
+  function handleSelectionPointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (durationSeconds <= 0) {
+      return;
+    }
+
+    dragRef.current = {
+      active: true,
+      startX: event.clientX,
+      startStart: selectionStartSeconds,
+      startEnd: selectionEndSeconds
+    };
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleTimelineClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (!timelineTrackRef.current || durationSeconds <= 0) {
+      return;
+    }
+
+    const trackRect = timelineTrackRef.current.getBoundingClientRect();
+    const clickFraction = clamp((event.clientX - trackRect.left) / trackRect.width, 0, 1);
+    const clickTime = clickFraction * durationSeconds;
+    const span = selectionSpan || durationSeconds;
+    const nextStart = clamp(clickTime - span / 2, 0, Math.max(durationSeconds - span, 0));
+    const nextEnd = clamp(nextStart + span, 0, durationSeconds);
+
+    setStart(secondsToTimestamp(nextStart));
+    setEnd(secondsToTimestamp(nextEnd));
+  }
+
+  function setPreviewAsBoundary(boundary: 'start' | 'end') {
+    if (durationSeconds <= 0) {
+      return;
+    }
+
+    const clampedPreview = clamp(previewTime, 0, durationSeconds);
+    if (boundary === 'start') {
+      const safeStart = Math.min(clampedPreview, Math.max(selectionEndSeconds - 1, 0));
+      setStart(secondsToTimestamp(safeStart));
+      return;
+    }
+
+    const safeEnd = Math.max(clampedPreview, selectionStartSeconds + 1);
+    setEnd(secondsToTimestamp(clamp(safeEnd, 0, durationSeconds)));
+  }
+
   function renderComplianceNotice() {
     return (
       <div className="compliance-box">
@@ -428,12 +551,52 @@ function App() {
               <span>{sourcePath ? fileNameFromPath(sourcePath) : 'No file'}</span>
             </div>
 
-            <div className="viewer-placeholder">
-              <span>{sourcePath ? 'Preview will be added later' : 'No file loaded'}</span>
+            <div className="video-preview-shell">
+              {sourcePath ? (
+                <video
+                  ref={videoRef}
+                  className="video-preview"
+                  src={videoPreviewUrl}
+                  controls
+                  preload="metadata"
+                  onLoadedMetadata={(event) => {
+                    const nextTime = clamp(selectionStartSeconds, 0, event.currentTarget.duration || selectionStartSeconds);
+                    event.currentTarget.currentTime = nextTime;
+                    setPreviewTime(nextTime);
+                  }}
+                  onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)}
+                />
+              ) : (
+                <div className="viewer-placeholder">
+                  <span>No file loaded</span>
+                </div>
+              )}
             </div>
 
-            <div className="timeline-strip">
-              <div className="timeline-selection" />
+            <div className="preview-toolbar">
+              <div>
+                <span>Preview time</span>
+                <strong>{secondsToTimestamp(previewTime)}</strong>
+              </div>
+              <div className="preview-actions">
+                <button type="button" className="button" onClick={() => setPreviewAsBoundary('start')} disabled={!sourcePath}>
+                  Set In From Preview
+                </button>
+                <button type="button" className="button" onClick={() => setPreviewAsBoundary('end')} disabled={!sourcePath}>
+                  Set Out From Preview
+                </button>
+              </div>
+            </div>
+
+            <div ref={timelineTrackRef} className="timeline-strip interactive" onClick={handleTimelineClick}>
+              <div className="timeline-playhead" style={{ left: `${previewPercent}%` }} />
+              <div
+                className="timeline-selection draggable"
+                style={{ left: `${selectionLeftPercent}%`, width: `${selectionWidthPercent}%` }}
+                onPointerDown={handleSelectionPointerDown}
+              >
+                <span className="timeline-label">Drag selection</span>
+              </div>
             </div>
 
             <div className="time-fields">

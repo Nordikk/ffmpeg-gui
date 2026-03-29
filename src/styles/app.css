@@ -81,7 +81,9 @@ label span,
 .placeholder-block p,
 .placeholder-notes span,
 .sidebar-footer p,
-.compliance-box p {
+.compliance-box p,
+.preview-toolbar span,
+.timeline-label {
   color: var(--text-muted);
 }
 
@@ -193,34 +195,92 @@ label span,
   margin-bottom: 12px;
 }
 
-.viewer-placeholder {
+.viewer-placeholder,
+.video-preview-shell {
   display: grid;
   place-items: center;
-  height: 280px;
+  min-height: 280px;
   border: 1px dashed var(--border);
   border-radius: 8px;
   background: #15191f;
   color: var(--text-muted);
+  overflow: hidden;
+}
+
+.video-preview {
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+  background: #000;
+  object-fit: contain;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.preview-toolbar strong {
+  display: block;
+  margin-top: 4px;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .timeline-strip {
   position: relative;
-  height: 44px;
+  height: 52px;
   margin-top: 12px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   background: repeating-linear-gradient(90deg, #1a2028, #1a2028 18px, #1d242d 18px, #1d242d 36px);
+  overflow: hidden;
+}
+
+.timeline-strip.interactive {
+  cursor: pointer;
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f5f7fa;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+  pointer-events: none;
 }
 
 .timeline-selection {
   position: absolute;
   top: 5px;
   bottom: 5px;
-  left: 16%;
-  right: 28%;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: rgba(77, 163, 255, 0.18);
+}
+
+.timeline-selection.draggable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+
+.timeline-selection.draggable:active {
+  cursor: grabbing;
+}
+
+.timeline-label {
+  font-size: 0.82rem;
+  user-select: none;
 }
 
 .time-fields,
@@ -404,7 +464,9 @@ select {
   .header-actions,
   .time-fields,
   .compact-fields,
-  .form-grid {
+  .form-grid,
+  .preview-toolbar,
+  .preview-actions {
     grid-template-columns: 1fr;
     display: grid;
   }
