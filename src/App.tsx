@@ -1,4 +1,5 @@
 
+import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, queueJobs, tools } from './data/appData';
 
@@ -308,24 +309,21 @@ function App() {
   }, [durationSeconds]);
 
   async function handleOpenFile() {
-    if (!window.desktop) {
-      setError('Desktop API is not available.');
-      return;
-    }
+    
 
     setError('');
     setIsBusy(true);
     setStatus('Loading file...');
 
     try {
-      const selectedPath = await window.desktop.openFile();
+      const selectedPath = await invoke<string | null>('open_file');
 
       if (!selectedPath) {
         setStatus('File selection cancelled');
         return;
       }
 
-      const result = await window.desktop.probeMedia(selectedPath);
+      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
       const duration = Number(result.format?.duration || 0);
       const initialEnd = secondsToTimestamp(duration);
       const extension = extensionFromPath(selectedPath);
@@ -349,21 +347,18 @@ function App() {
   }
 
   async function handlePickOutput() {
-    if (!window.desktop || !sourcePath) {
+    if (!sourcePath) {
       return;
     }
 
-    const selectedOutput = await window.desktop.saveFile(sourcePath, outputExtension, '_trim');
+    const selectedOutput = await invoke<string | null>('save_file', { sourcePath, extension: outputExtension, suffix: '_trim' });
     if (selectedOutput) {
       setOutputPath(selectedOutput);
     }
   }
 
   async function handleRunLosslessCut() {
-    if (!window.desktop) {
-      setError('Desktop API is not available.');
-      return;
-    }
+    
 
     if (!sourcePath || !outputPath) {
       setError('Please choose a source file and an output path first.');
@@ -383,7 +378,7 @@ function App() {
     setStatus('Running ffmpeg...');
 
     try {
-      const result = await window.desktop.runLosslessCut({
+      const result = await invoke<{ command: string; log: string }>('run_lossless_cut', {
         sourcePath,
         outputPath,
         start,
@@ -404,23 +399,20 @@ function App() {
   }
 
   async function handleOpenConvertFile() {
-    if (!window.desktop) {
-      setConvertError('Desktop API is not available.');
-      return;
-    }
+    
 
     setConvertError('');
     setIsConvertBusy(true);
     setConvertStatus('Loading file...');
 
     try {
-      const selectedPath = await window.desktop.openFile();
+      const selectedPath = await invoke<string | null>('open_file');
       if (!selectedPath) {
         setConvertStatus('File selection cancelled');
         return;
       }
 
-      const result = await window.desktop.probeMedia(selectedPath);
+      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
       setConvertSourcePath(selectedPath);
       setConvertProbe(result);
       setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainer));
@@ -436,21 +428,18 @@ function App() {
   }
 
   async function handlePickConvertOutput() {
-    if (!window.desktop || !convertSourcePath) {
+    if (!convertSourcePath) {
       return;
     }
 
-    const selectedOutput = await window.desktop.saveFile(convertSourcePath, convertContainer, '_convert');
+    const selectedOutput = await invoke<string | null>('save_file', { sourcePath, extension: outputExtension, suffix: '_trim' });
     if (selectedOutput) {
       setConvertOutputPath(selectedOutput);
     }
   }
 
   async function handleRunConvert() {
-    if (!window.desktop) {
-      setConvertError('Desktop API is not available.');
-      return;
-    }
+    
 
     if (!convertSourcePath || !convertOutputPath) {
       setConvertError('Please choose a source file and an output path first.');
@@ -462,7 +451,7 @@ function App() {
     setConvertStatus('Running ffmpeg...');
 
     try {
-      const result = await window.desktop.runConvert({
+      const result = await invoke<{ command: string; log: string }>('run_convert', {
         sourcePath: convertSourcePath,
         outputPath: convertOutputPath,
         videoCodec: convertVideoCodec,
@@ -1032,3 +1021,6 @@ function App() {
 }
 
 export default App;
+
+
+

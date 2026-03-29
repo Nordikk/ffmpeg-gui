@@ -4,3 +4,5 @@ release/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+HANDOFF.md

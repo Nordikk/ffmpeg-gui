@@ -1,6 +1,6 @@
 # FFmpeg Forge
 
-Early prototype for a focused all-in-one desktop GUI around FFmpeg, currently packaged with Electron for Windows.
+Cross-platform desktop prototype for a focused all-in-one FFmpeg GUI, now migrated to Tauri.
 
 ## Transparency
 
@@ -21,19 +21,27 @@ See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for links to the official
 ## Development
 
 - `npm install`
-- `npm run dev` for the browser build
-- `npm run start:desktop` to launch the desktop app locally
+- `npm run dev` for the frontend only
+- `npm run tauri:dev` to run the desktop app in Tauri dev mode
 
-## Build EXE
+## Build Apps
 
-- `npm run build:desktop`
-- The portable EXE is written to `release/`
+- `npm run tauri:build`
+- Windows output is written under `src-tauri/target/release/bundle/`
+
+## Platform Notes
+
+- Windows builds can be produced from this Windows environment.
+- A real macOS `.app` build must be created on macOS with Apple's native toolchain.
+- Linux bundles should be built on Linux for the cleanest results.
 
 ## Current Features
 
-- Desktop app shell with Electron
+- Tauri desktop app shell
 - Focused English UI instead of a landing-page style layout
 - Working `Lossless Cut` workflow
+- Video preview inside `Lossless Cut`
+- Draggable range selection in the `Lossless Cut` timeline
 - Working `Convert` workflow with safe default presets
 - File picker and output picker
 - `ffprobe` analysis for loaded media files
@@ -42,7 +50,7 @@ See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for links to the official
 
 ## Planned Next Steps
 
-1. Bundle `ffmpeg` and `ffprobe` only with a full licensing/compliance workflow in place
-2. Add real video preview and frame scrubbing
-3. Add keyframe snapping for cleaner lossless cuts
+1. Add draggable trim handles for resizing the selected cut range
+2. Add real frame stepping and keyframe snapping
+3. Bundle `ffmpeg` and `ffprobe` only with a full licensing/compliance workflow in place
 4. Implement the remaining modules such as Audio, Frames, and Batch
