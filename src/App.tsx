@@ -65,6 +65,11 @@ type NativeFileDropPayload = {
   } | null;
 };
 
+type NativeFileDropStatusPayload = {
+  registeredWindows: number;
+  detail: string;
+};
+
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
   'lossless-cut': {
     title: 'Lossless Cut',
@@ -522,6 +527,7 @@ function App() {
   useEffect(() => {
     let unlistenWebview: undefined | (() => void);
     let unlistenFallback: undefined | (() => void);
+    let unlistenFallbackStatus: undefined | (() => void);
 
     function applyDropDebug(
       source: DropDebugState['source'],
@@ -592,18 +598,49 @@ function App() {
       });
 
       unlistenFallback = await currentWebviewWindow.listen<NativeFileDropPayload>('native-file-drop', (event) => {
-        if (event.payload.kind !== 'drop') {
+        if (event.payload.kind === 'enter') {
+          setIsDropTargetActive(true);
+          applyDropDebug('win32', 'enter', event.payload.paths, 'Native Windows file drop enter');
+          return;
+        }
+
+        if (event.payload.kind === 'over') {
+          setDropDebug((current) => ({
+            ...current,
+            lastEvent: 'over',
+            timestamp: new Date().toISOString(),
+            source: 'win32',
+            detail: 'Native Windows file drop over'
+          }));
+          return;
+        }
+
+        if (event.payload.kind === 'leave') {
+          setIsDropTargetActive(false);
+          applyDropDebug('win32', 'leave', [], 'Native Windows file drop leave');
           return;
         }
 
         setIsDropTargetActive(false);
-        applyDropDebug('win32', 'drop', event.payload.paths);
+        applyDropDebug('win32', 'drop', event.payload.paths, 'Native Windows file drop');
         const [firstPath] = event.payload.paths;
 
         if (firstPath) {
           processDroppedPath(firstPath);
         }
       });
+
+      unlistenFallbackStatus = await currentWebviewWindow.listen<NativeFileDropStatusPayload>(
+        'native-file-drop-status',
+        (event) => {
+          setDropDebug((current) => ({
+            ...current,
+            timestamp: new Date().toISOString(),
+            source: 'win32',
+            detail: `${event.payload.detail} Registered windows: ${event.payload.registeredWindows}.`
+          }));
+        }
+      );
     }
 
     void bindDragDropListener();
@@ -680,6 +717,7 @@ function App() {
       setIsDropTargetActive(false);
       unlistenWebview?.();
       unlistenFallback?.();
+      unlistenFallbackStatus?.();
       window.removeEventListener('dragenter', handleDomDragEnter, true);
       window.removeEventListener('dragover', handleDomDragOver, true);
       window.removeEventListener('dragleave', handleDomDragLeave, true);
