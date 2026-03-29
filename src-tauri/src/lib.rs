@@ -2,7 +2,7 @@ use rfd::FileDialog;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::{DragDropEvent, Emitter, Manager, WebviewEvent, WindowEvent};
+use tauri::Builder;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,93 +30,6 @@ struct ToolStatus {
 #[serde(rename_all = "camelCase")]
 struct KeyframeProbe {
     keyframes: Vec<f64>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DropPosition {
-    x: f64,
-    y: f64,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeFileDropPayload {
-    kind: String,
-    paths: Vec<String>,
-    position: Option<DropPosition>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeFileDropStatusPayload {
-    registered_windows: usize,
-    detail: String,
-}
-
-fn emit_native_file_drop_status<R: tauri::Runtime>(
-    app_handle: &tauri::AppHandle<R>,
-    window_label: &str,
-    registered_windows: usize,
-    detail: impl Into<String>,
-) {
-    let _ = app_handle.emit_to(
-        window_label,
-        "native-file-drop-status",
-        NativeFileDropStatusPayload {
-            registered_windows,
-            detail: detail.into(),
-        },
-    );
-}
-
-fn emit_native_drag_drop_event<R: tauri::Runtime>(
-    app_handle: &tauri::AppHandle<R>,
-    window_label: &str,
-    detail: &str,
-    event: &DragDropEvent,
-) {
-    let payload = match event {
-        DragDropEvent::Enter { paths, position } => NativeFileDropPayload {
-            kind: "enter".to_string(),
-            paths: paths
-                .iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect(),
-            position: Some(DropPosition {
-                x: position.x,
-                y: position.y,
-            }),
-        },
-        DragDropEvent::Over { position } => NativeFileDropPayload {
-            kind: "over".to_string(),
-            paths: Vec::new(),
-            position: Some(DropPosition {
-                x: position.x,
-                y: position.y,
-            }),
-        },
-        DragDropEvent::Drop { paths, position } => NativeFileDropPayload {
-            kind: "drop".to_string(),
-            paths: paths
-                .iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect(),
-            position: Some(DropPosition {
-                x: position.x,
-                y: position.y,
-            }),
-        },
-        DragDropEvent::Leave => NativeFileDropPayload {
-            kind: "leave".to_string(),
-            paths: Vec::new(),
-            position: None,
-        },
-        _ => return,
-    };
-
-    let _ = app_handle.emit_to(window_label, "native-file-drop", payload);
-    emit_native_file_drop_status(app_handle, window_label, 1, detail);
 }
 
 #[derive(serde::Deserialize)]
@@ -337,39 +250,7 @@ fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                emit_native_file_drop_status(
-                    &app.handle().clone(),
-                    window.label(),
-                    1,
-                    "Native drag and drop bridge initialized.",
-                );
-            }
-
-            Ok(())
-        })
-        .on_webview_event(|webview, event| {
-            if let WebviewEvent::DragDrop(event) = event {
-                emit_native_drag_drop_event(
-                    &webview.app_handle(),
-                    webview.label(),
-                    "Received native Tauri webview drag/drop event.",
-                    event,
-                );
-            }
-        })
-        .on_window_event(|window, event| {
-            if let WindowEvent::DragDrop(event) = event {
-                emit_native_drag_drop_event(
-                    &window.app_handle(),
-                    window.label(),
-                    "Received native Tauri window drag/drop event.",
-                    event,
-                );
-            }
-        })
+    Builder::default()
         .invoke_handler(tauri::generate_handler![
             check_tool_status,
             open_file,

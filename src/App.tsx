@@ -1,5 +1,8 @@
+import { TauriEvent, listen as listenEvent } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
 
@@ -51,22 +54,16 @@ type DropDebugState = {
   pathCount: number;
   firstPath: string;
   timestamp: string;
-  source: 'none' | 'webview' | 'win32' | 'dom';
+  source: 'none' | 'window' | 'webview' | 'webviewWindow' | 'global' | 'dom';
   detail: string;
 };
 
-type NativeFileDropPayload = {
-  kind: DropDebugState['lastEvent'];
-  paths: string[];
+type DragDropPayload = {
+  paths?: string[];
   position?: {
     x: number;
     y: number;
-  } | null;
-};
-
-type NativeFileDropStatusPayload = {
-  registeredWindows: number;
-  detail: string;
+  };
 };
 
 const moduleDescriptions: Record<ToolId, { title: string; description: string }> = {
@@ -385,6 +382,8 @@ function App() {
   const timelineTrackRef = useRef<HTMLDivElement | null>(null);
   const lastDropRef = useRef<{ path: string; at: number }>({ path: '', at: 0 });
   const domDragDepthRef = useRef(0);
+  const activeToolRef = useRef<ToolId>('lossless-cut');
+  const convertContainerRef = useRef('mp4');
   const dragRef = useRef<{ active: false } | { active: true; mode: 'move' | 'start' | 'end'; startX: number; startStart: number; startEnd: number }>({
     active: false
   });
@@ -452,6 +451,14 @@ function App() {
       setConvertOutputPath(replaceExtension(convertSourcePath, '_convert', selectedPreset.container));
     }
   }, [convertPreset, convertSourcePath]);
+
+  useEffect(() => {
+    activeToolRef.current = activeTool;
+  }, [activeTool]);
+
+  useEffect(() => {
+    convertContainerRef.current = convertContainer;
+  }, [convertContainer]);
 
   useEffect(() => {
     if (!videoRef.current || !sourcePath) {
@@ -524,8 +531,13 @@ function App() {
   }, [durationSeconds, keyframes, snapToKeyframes, videoCodec, selectionStartSeconds, selectionEndSeconds]);
 
   useEffect(() => {
-    let unlistenFallback: undefined | (() => void);
-    let unlistenFallbackStatus: undefined | (() => void);
+    let unlistenWindow: undefined | (() => void);
+    let unlistenWebview: undefined | (() => void);
+    let unlistenWebviewWindow: undefined | (() => void);
+    let unlistenGlobalEnter: undefined | (() => void);
+    let unlistenGlobalOver: undefined | (() => void);
+    let unlistenGlobalDrop: undefined | (() => void);
+    let unlistenGlobalLeave: undefined | (() => void);
 
     function applyDropDebug(
       source: DropDebugState['source'],
@@ -557,53 +569,93 @@ function App() {
       handleDroppedPath(filePath);
     }
 
+    function handleNativeEvent(
+      source: Exclude<DropDebugState['source'], 'none' | 'dom'>,
+      eventType: DropDebugState['lastEvent'],
+      payload?: DragDropPayload,
+      detail = ''
+    ) {
+      const paths = payload?.paths ?? [];
+
+      if (eventType === 'enter') {
+        setIsDropTargetActive(true);
+        applyDropDebug(source, 'enter', paths, detail);
+        return;
+      }
+
+      if (eventType === 'over') {
+        setDropDebug((current) => ({
+          ...current,
+          lastEvent: 'over',
+          timestamp: new Date().toISOString(),
+          source,
+          detail
+        }));
+        return;
+      }
+
+      if (eventType === 'leave') {
+        setIsDropTargetActive(false);
+        applyDropDebug(source, 'leave', [], detail);
+        return;
+      }
+
+      setIsDropTargetActive(false);
+      applyDropDebug(source, 'drop', paths, detail);
+
+      const [firstPath] = paths;
+      if (firstPath) {
+        processDroppedPath(firstPath);
+      }
+    }
+
     async function bindDragDropListener() {
+      const currentWindow = getCurrentWindow();
+      const currentWebview = getCurrentWebview();
       const currentWebviewWindow = getCurrentWebviewWindow();
 
-      unlistenFallback = await currentWebviewWindow.listen<NativeFileDropPayload>('native-file-drop', (event) => {
-        if (event.payload.kind === 'enter') {
-          setIsDropTargetActive(true);
-          applyDropDebug('win32', 'enter', event.payload.paths, 'Native Windows file drop enter');
-          return;
-        }
-
-        if (event.payload.kind === 'over') {
-          setDropDebug((current) => ({
-            ...current,
-            lastEvent: 'over',
-            timestamp: new Date().toISOString(),
-            source: 'win32',
-            detail: 'Native Windows file drop over'
-          }));
-          return;
-        }
-
-        if (event.payload.kind === 'leave') {
-          setIsDropTargetActive(false);
-          applyDropDebug('win32', 'leave', [], 'Native Windows file drop leave');
-          return;
-        }
-
-        setIsDropTargetActive(false);
-        applyDropDebug('win32', 'drop', event.payload.paths, 'Native Windows file drop');
-        const [firstPath] = event.payload.paths;
-
-        if (firstPath) {
-          processDroppedPath(firstPath);
-        }
+      unlistenWindow = await currentWindow.onDragDropEvent((event) => {
+        handleNativeEvent(
+          'window',
+          event.payload.type,
+          event.payload.type === 'leave' ? undefined : event.payload,
+          'Tauri Window drag/drop event'
+        );
       });
 
-      unlistenFallbackStatus = await currentWebviewWindow.listen<NativeFileDropStatusPayload>(
-        'native-file-drop-status',
-        (event) => {
-          setDropDebug((current) => ({
-            ...current,
-            timestamp: new Date().toISOString(),
-            source: 'win32',
-            detail: `${event.payload.detail} Registered windows: ${event.payload.registeredWindows}.`
-          }));
-        }
-      );
+      unlistenWebview = await currentWebview.onDragDropEvent((event) => {
+        handleNativeEvent(
+          'webview',
+          event.payload.type,
+          event.payload.type === 'leave' ? undefined : event.payload,
+          'Tauri Webview drag/drop event'
+        );
+      });
+
+      unlistenWebviewWindow = await currentWebviewWindow.onDragDropEvent((event) => {
+        handleNativeEvent(
+          'webviewWindow',
+          event.payload.type,
+          event.payload.type === 'leave' ? undefined : event.payload,
+          'Tauri WebviewWindow drag/drop event'
+        );
+      });
+
+      unlistenGlobalEnter = await listenEvent<DragDropPayload>(TauriEvent.DRAG_ENTER, (event) => {
+        handleNativeEvent('global', 'enter', event.payload, 'Global Tauri drag-enter event');
+      });
+
+      unlistenGlobalOver = await listenEvent<DragDropPayload>(TauriEvent.DRAG_OVER, (event) => {
+        handleNativeEvent('global', 'over', event.payload, 'Global Tauri drag-over event');
+      });
+
+      unlistenGlobalDrop = await listenEvent<DragDropPayload>(TauriEvent.DRAG_DROP, (event) => {
+        handleNativeEvent('global', 'drop', event.payload, 'Global Tauri drag-drop event');
+      });
+
+      unlistenGlobalLeave = await listenEvent(TauriEvent.DRAG_LEAVE, () => {
+        handleNativeEvent('global', 'leave', undefined, 'Global Tauri drag-leave event');
+      });
     }
 
     void bindDragDropListener();
@@ -678,14 +730,19 @@ function App() {
     return () => {
       domDragDepthRef.current = 0;
       setIsDropTargetActive(false);
-      unlistenFallback?.();
-      unlistenFallbackStatus?.();
+      unlistenWindow?.();
+      unlistenWebview?.();
+      unlistenWebviewWindow?.();
+      unlistenGlobalEnter?.();
+      unlistenGlobalOver?.();
+      unlistenGlobalDrop?.();
+      unlistenGlobalLeave?.();
       window.removeEventListener('dragenter', handleDomDragEnter, true);
       window.removeEventListener('dragover', handleDomDragOver, true);
       window.removeEventListener('dragleave', handleDomDragLeave, true);
       window.removeEventListener('drop', handleDomDrop, true);
     };
-  }, [activeTool, convertContainer]);
+  }, []);
 
   function addJob(kind: JobRecord['kind'], source: string, output: string, detail: string) {
     const id = `${kind}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -722,7 +779,7 @@ function App() {
       return;
     }
 
-    if (activeTool === 'smart-convert') {
+    if (activeToolRef.current === 'smart-convert') {
       void loadConvertFile(filePath);
       return;
     }
@@ -772,7 +829,7 @@ function App() {
       const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
       setConvertSourcePath(selectedPath);
       setConvertProbe(result);
-      setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainer));
+      setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainerRef.current));
       setConvertStatus('Ready');
       setConvertLog('');
     } catch (caughtError) {
