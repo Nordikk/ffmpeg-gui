@@ -51,6 +51,7 @@ type DropDebugState = {
   pathCount: number;
   firstPath: string;
   timestamp: string;
+  source: 'none' | 'tauri' | 'win32';
 };
 
 type NativeFileDropPayload = {
@@ -271,11 +272,13 @@ function App() {
     lastEvent: 'idle',
     pathCount: 0,
     firstPath: '',
-    timestamp: ''
+    timestamp: '',
+    source: 'none'
   });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineTrackRef = useRef<HTMLDivElement | null>(null);
+  const lastDropRef = useRef<{ path: string; at: number }>({ path: '', at: 0 });
   const dragRef = useRef<{ active: false } | { active: true; mode: 'move' | 'start' | 'end'; startX: number; startStart: number; startEnd: number }>({
     active: false
   });
@@ -415,56 +418,83 @@ function App() {
   }, [durationSeconds, keyframes, snapToKeyframes, videoCodec, selectionStartSeconds, selectionEndSeconds]);
 
   useEffect(() => {
-    let unlisten: undefined | (() => void);
+    let unlistenWindow: undefined | (() => void);
+    let unlistenFallback: undefined | (() => void);
+
+    function applyDropDebug(
+      source: DropDebugState['source'],
+      lastEvent: DropDebugState['lastEvent'],
+      paths: string[] = []
+    ) {
+      setDropDebug({
+        lastEvent,
+        pathCount: paths.length,
+        firstPath: paths[0] || '',
+        timestamp: new Date().toISOString(),
+        source
+      });
+    }
+
+    function processDroppedPath(filePath: string) {
+      if (!filePath) {
+        return;
+      }
+
+      const now = Date.now();
+      if (lastDropRef.current.path === filePath && now - lastDropRef.current.at < 1200) {
+        return;
+      }
+
+      lastDropRef.current = { path: filePath, at: now };
+      handleDroppedPath(filePath);
+    }
 
     async function bindDragDropListener() {
-      unlisten = await getCurrentWindow().listen<NativeFileDropPayload>('native-file-drop', (event) => {
-        if (event.payload.kind === 'enter') {
+      unlistenWindow = await getCurrentWindow().onDragDropEvent((event) => {
+        if (event.payload.type === 'enter') {
           setIsDropTargetActive(true);
-          setDropDebug({
-            lastEvent: 'enter',
-            pathCount: event.payload.paths.length,
-            firstPath: event.payload.paths[0] || '',
-            timestamp: new Date().toISOString()
-          });
+          applyDropDebug('tauri', 'enter', event.payload.paths);
           return;
         }
 
-        if (event.payload.kind === 'over') {
+        if (event.payload.type === 'over') {
           setDropDebug((current) => ({
             ...current,
             lastEvent: 'over',
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            source: 'tauri'
           }));
           return;
         }
 
-        if (event.payload.kind === 'leave') {
+        if (event.payload.type === 'leave') {
           setIsDropTargetActive(false);
-          setDropDebug({
-            lastEvent: 'leave',
-            pathCount: 0,
-            firstPath: '',
-            timestamp: new Date().toISOString()
-          });
+          applyDropDebug('tauri', 'leave');
           return;
         }
 
-        if (event.payload.kind === 'drop') {
+        if (event.payload.type === 'drop') {
           setIsDropTargetActive(false);
+          applyDropDebug('tauri', 'drop', event.payload.paths);
           const [firstPath] = event.payload.paths;
-          setDropDebug({
-            lastEvent: 'drop',
-            pathCount: event.payload.paths.length,
-            firstPath: firstPath || '',
-            timestamp: new Date().toISOString()
-          });
 
-          if (!firstPath) {
-            return;
+          if (firstPath) {
+            processDroppedPath(firstPath);
           }
+        }
+      });
 
-          handleDroppedPath(firstPath);
+      unlistenFallback = await getCurrentWindow().listen<NativeFileDropPayload>('native-file-drop', (event) => {
+        if (event.payload.kind !== 'drop') {
+          return;
+        }
+
+        setIsDropTargetActive(false);
+        applyDropDebug('win32', 'drop', event.payload.paths);
+        const [firstPath] = event.payload.paths;
+
+        if (firstPath) {
+          processDroppedPath(firstPath);
         }
       });
     }
@@ -473,7 +503,8 @@ function App() {
 
     return () => {
       setIsDropTargetActive(false);
-      unlisten?.();
+      unlistenWindow?.();
+      unlistenFallback?.();
     };
   }, [activeTool, convertContainer]);
 
@@ -879,6 +910,10 @@ function App() {
           <div>
             <span>Last event</span>
             <strong>{dropDebug.lastEvent}</strong>
+          </div>
+          <div>
+            <span>Source</span>
+            <strong>{dropDebug.source}</strong>
           </div>
           <div>
             <span>Paths</span>

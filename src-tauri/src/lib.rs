@@ -2,7 +2,22 @@ use rfd::FileDialog;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
+
+#[cfg(windows)]
+use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+#[cfg(windows)]
+use windows::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    UI::{
+        Shell::{
+            DefSubclassProc, DragAcceptFiles, DragFinish, DragQueryFileW, HDROP,
+            RemoveWindowSubclass, SetWindowSubclass,
+        },
+        WindowsAndMessaging::{WM_DROPFILES, WM_NCDESTROY},
+    },
+};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +60,121 @@ struct NativeFileDropPayload {
     kind: String,
     paths: Vec<String>,
     position: Option<DropPosition>,
+}
+
+#[cfg(windows)]
+const WINDOW_DROP_SUBCLASS_ID: usize = 0x4646_4D50_4547;
+
+#[cfg(windows)]
+struct WindowsDropSubclassData<R: tauri::Runtime> {
+    app_handle: tauri::AppHandle<R>,
+    window_label: String,
+}
+
+#[cfg(windows)]
+unsafe fn extract_drop_paths(hdrop: HDROP) -> Vec<String> {
+    let mut empty: [u16; 0] = [];
+    let item_count = unsafe { DragQueryFileW(hdrop, 0xFFFF_FFFF, Some(&mut empty)) };
+    let mut paths = Vec::with_capacity(item_count as usize);
+
+    for index in 0..item_count {
+        let character_count = unsafe { DragQueryFileW(hdrop, index, Some(&mut empty)) as usize };
+        if character_count == 0 {
+            continue;
+        }
+
+        let mut path_buf = vec![0u16; character_count + 1];
+        unsafe {
+            DragQueryFileW(hdrop, index, Some(&mut path_buf));
+        }
+
+        paths.push(
+            OsString::from_wide(&path_buf[..character_count])
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn file_drop_subclass_proc<R: tauri::Runtime>(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _uidsubclass: usize,
+    dwrefdata: usize,
+) -> LRESULT {
+    match msg {
+        WM_DROPFILES => {
+            let data = unsafe { &*(dwrefdata as *const WindowsDropSubclassData<R>) };
+            let hdrop = HDROP(wparam.0 as _);
+            let paths = unsafe { extract_drop_paths(hdrop) };
+            unsafe {
+                DragFinish(hdrop);
+            }
+
+            if !paths.is_empty() {
+                let payload = NativeFileDropPayload {
+                    kind: "drop".to_string(),
+                    paths,
+                    position: None,
+                };
+                let _ = data
+                    .app_handle
+                    .emit_to(data.window_label.as_str(), "native-file-drop", payload);
+            }
+
+            LRESULT(0)
+        }
+        WM_NCDESTROY => {
+            unsafe {
+                let _ = RemoveWindowSubclass(
+                    hwnd,
+                    Some(file_drop_subclass_proc::<R>),
+                    WINDOW_DROP_SUBCLASS_ID,
+                );
+                drop(Box::from_raw(
+                    dwrefdata as *mut WindowsDropSubclassData<R>,
+                ));
+                DefSubclassProc(hwnd, msg, wparam, lparam)
+            }
+        }
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+#[cfg(windows)]
+fn install_windows_file_drop_fallback<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    let hwnd = window.hwnd()?;
+    let data = Box::new(WindowsDropSubclassData {
+        app_handle: app.handle().clone(),
+        window_label: window.label().to_string(),
+    });
+    let data_ptr = Box::into_raw(data);
+
+    unsafe {
+        DragAcceptFiles(hwnd, true);
+
+        if !SetWindowSubclass(
+            hwnd,
+            Some(file_drop_subclass_proc::<R>),
+            WINDOW_DROP_SUBCLASS_ID,
+            data_ptr as usize,
+        )
+        .as_bool()
+        {
+            drop(Box::from_raw(data_ptr));
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -266,49 +396,11 @@ fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .on_webview_event(|webview, event| {
-            if let tauri::WebviewEvent::DragDrop(event) = event {
-                let payload = match event {
-                    tauri::DragDropEvent::Enter { paths, position } => NativeFileDropPayload {
-                        kind: "enter".to_string(),
-                        paths: paths
-                            .iter()
-                            .map(|path| path.to_string_lossy().to_string())
-                            .collect(),
-                        position: Some(DropPosition {
-                            x: position.x,
-                            y: position.y,
-                        }),
-                    },
-                    tauri::DragDropEvent::Over { position } => NativeFileDropPayload {
-                        kind: "over".to_string(),
-                        paths: Vec::new(),
-                        position: Some(DropPosition {
-                            x: position.x,
-                            y: position.y,
-                        }),
-                    },
-                    tauri::DragDropEvent::Drop { paths, position } => NativeFileDropPayload {
-                        kind: "drop".to_string(),
-                        paths: paths
-                            .iter()
-                            .map(|path| path.to_string_lossy().to_string())
-                            .collect(),
-                        position: Some(DropPosition {
-                            x: position.x,
-                            y: position.y,
-                        }),
-                    },
-                    tauri::DragDropEvent::Leave => NativeFileDropPayload {
-                        kind: "leave".to_string(),
-                        paths: Vec::new(),
-                        position: None,
-                    },
-                    _ => return,
-                };
+        .setup(|app| {
+            #[cfg(windows)]
+            install_windows_file_drop_fallback(app)?;
 
-                let _ = webview.window().emit("native-file-drop", payload);
-            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             check_tool_status,
