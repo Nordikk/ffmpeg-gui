@@ -423,37 +423,6 @@ function App() {
     };
   }, [activeTool, convertContainer]);
 
-  useEffect(() => {
-    function handleDragOver(event: DragEvent) {
-      event.preventDefault();
-      if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = 'copy';
-      }
-      setIsDropTargetActive(true);
-    }
-
-    function handleDragLeave(event: DragEvent) {
-      if (event.relatedTarget === null) {
-        setIsDropTargetActive(false);
-      }
-    }
-
-    function handleDrop(event: DragEvent) {
-      event.preventDefault();
-      // Native Tauri drop events provide the real file paths.
-    }
-
-    window.addEventListener('dragover', handleDragOver);
-    window.addEventListener('drop', handleDrop);
-    window.addEventListener('dragleave', handleDragLeave);
-
-    return () => {
-      window.removeEventListener('dragover', handleDragOver);
-      window.removeEventListener('drop', handleDrop);
-      window.removeEventListener('dragleave', handleDragLeave);
-    };
-  }, [activeTool, convertContainer]);
-
   function addJob(kind: JobRecord['kind'], source: string, output: string, detail: string) {
     const id = `${kind}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const nextJob: JobRecord = {
