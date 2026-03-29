@@ -1143,7 +1143,7 @@ function App() {
 
         <div className="sidebar-footer">
           <span>{ffmpegReady ? 'FFmpeg environment ready.' : 'FFmpeg setup required.'}</span>
-          <strong>Made with heart by Nordik</strong>
+          <strong>Made with ❤️ by Nordik</strong>
         </div>
       </aside>
 

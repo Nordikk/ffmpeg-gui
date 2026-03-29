@@ -24,8 +24,9 @@
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
+  overflow: hidden;
 }
 
 button,
@@ -44,14 +45,14 @@ code {
 }
 
 #root {
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .app-shell {
   position: relative;
   display: grid;
   grid-template-columns: 220px 1fr;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .drop-overlay {
@@ -87,6 +88,7 @@ code {
   padding: 16px;
   border-right: 1px solid var(--border);
   background: #12161b;
+  overflow: auto;
 }
 
 .sidebar-header h1 {
@@ -151,7 +153,10 @@ label span,
 }
 
 .workspace {
+  min-width: 0;
+  height: 100vh;
   padding: 16px;
+  overflow: auto;
 }
 
 .startup-panel,

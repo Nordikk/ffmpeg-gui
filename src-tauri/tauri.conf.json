@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "FFmpeg Forge",
-        "width": 1440,
-        "height": 960,
+        "width": 1500,
+        "height": 1020,
         "minWidth": 1180,
-        "minHeight": 760,
+        "minHeight": 840,
         "resizable": true
       }
     ],
