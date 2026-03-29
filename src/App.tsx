@@ -448,6 +448,13 @@ function App() {
 
       if (droppedPath) {
         handleDroppedPath(droppedPath);
+        return;
+      }
+
+      if (activeTool === 'smart-convert') {
+        setConvertError(droppedFiles.length ? 'Drop received, but no local file path was available.' : 'No file was dropped.');
+      } else {
+        setError(droppedFiles.length ? 'Drop received, but no local file path was available.' : 'No file was dropped.');
       }
     }
 
