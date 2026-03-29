@@ -1,5 +1,6 @@
 use rfd::FileDialog;
 use serde::Serialize;
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{async_runtime, Builder};
@@ -111,6 +112,84 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
+fn fallback_search_dirs() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        &[]
+    }
+}
+
+fn candidate_binary_names(binary: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let has_extension = Path::new(binary)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some();
+
+        if has_extension {
+            vec![binary.to_string()]
+        } else {
+            vec![binary.to_string(), format!("{binary}.exe")]
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![binary.to_string()]
+    }
+}
+
+fn resolve_binary(binary: &str) -> Result<PathBuf, String> {
+    let binary_path = Path::new(binary);
+    if binary_path.components().count() > 1 {
+        if binary_path.exists() {
+            return Ok(binary_path.to_path_buf());
+        }
+
+        return Err(format!("{binary} does not exist"));
+    }
+
+    let mut search_dirs = env::var_os("PATH")
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for fallback in fallback_search_dirs() {
+        let fallback_path = PathBuf::from(fallback);
+        if !search_dirs.iter().any(|entry| entry == &fallback_path) {
+            search_dirs.push(fallback_path);
+        }
+    }
+
+    let candidate_names = candidate_binary_names(binary);
+    for directory in search_dirs {
+        for candidate_name in &candidate_names {
+            let candidate_path = directory.join(candidate_name);
+            if candidate_path.is_file() {
+                return Ok(candidate_path);
+            }
+        }
+    }
+
+    Err(format!(
+        "{binary} was not found. Checked PATH and fallback directories: {}",
+        fallback_search_dirs().join(", ")
+    ))
+}
+
 fn build_convert_args(payload: &ConvertPayload) -> Vec<String> {
     let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path.clone()];
 
@@ -141,7 +220,8 @@ fn build_convert_args(payload: &ConvertPayload) -> Vec<String> {
 }
 
 fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> {
-    let output = Command::new(command)
+    let resolved_command = resolve_binary(command)?;
+    let output = Command::new(&resolved_command)
         .args(args)
         .output()
         .map_err(|error| error.to_string())?;
@@ -150,7 +230,7 @@ fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Ok(CommandResult {
-            command: std::iter::once(command.to_string())
+            command: std::iter::once(resolved_command.display().to_string())
                 .chain(args.iter().map(|arg| shell_quote(arg)))
                 .collect::<Vec<_>>()
                 .join(" "),
@@ -162,13 +242,24 @@ fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> 
 }
 
 fn probe_binary(binary: &str) -> BinaryStatus {
-    match Command::new(binary).arg("-version").output() {
+    let resolved_binary = match resolve_binary(binary) {
+        Ok(value) => value,
+        Err(error) => {
+            return BinaryStatus {
+                available: false,
+                version: String::new(),
+                error,
+            }
+        }
+    };
+
+    match Command::new(&resolved_binary).arg("-version").output() {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).to_string();
             let version = text.lines().next().unwrap_or_default().trim().to_string();
             BinaryStatus {
                 available: true,
-                version,
+                version: format!("{} ({})", version, resolved_binary.display()),
                 error: String::new(),
             }
         }
