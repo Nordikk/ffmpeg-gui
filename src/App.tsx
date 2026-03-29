@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { presets, queueJobs, tools } from './data/appData';
+import { convertPresets, presets, queueJobs, tools } from './data/appData';
 
 type ToolId = (typeof tools)[number]['id'];
 
@@ -28,7 +28,7 @@ const moduleDescriptions: Record<ToolId, { title: string; description: string }>
   },
   'smart-convert': {
     title: 'Convert',
-    description: 'Container, codec, and preset conversion will be added here next.'
+    description: 'Convert media with built-in presets that avoid assuming GPL-only or nonfree FFmpeg builds.'
   },
   'audio-lab': {
     title: 'Audio',
@@ -92,7 +92,11 @@ function extensionFromPath(filePath: string) {
   return match?.[1]?.toLowerCase() || 'mp4';
 }
 
-function buildCommandPreview(
+function replaceExtension(filePath: string, suffix: string, extension: string) {
+  return filePath.replace(/\.[^.]+$/, `${suffix}.${extension}`);
+}
+
+function buildLosslessCommandPreview(
   sourcePath: string,
   outputPath: string,
   start: string,
@@ -107,8 +111,45 @@ function buildCommandPreview(
   return `ffmpeg -y -ss ${start} -to ${end} -i "${sourcePath}" -c:v ${videoCodec} -c:a ${audioCodec} "${outputPath}"`;
 }
 
+function buildConvertCommandPreview(
+  sourcePath: string,
+  outputPath: string,
+  videoCodec: string,
+  audioCodec: string,
+  videoBitrate: string,
+  audioBitrate: string
+) {
+  if (!sourcePath || !outputPath) {
+    return 'ffmpeg -i input.mov -c:v mpeg4 -b:v 5M -c:a aac -b:a 192k output.mp4';
+  }
+
+  const parts = ['ffmpeg', '-y', '-i', `"${sourcePath}"`];
+
+  if (videoCodec === 'none') {
+    parts.push('-vn');
+  } else {
+    parts.push('-c:v', videoCodec);
+    if (videoBitrate && videoCodec !== 'copy') {
+      parts.push('-b:v', videoBitrate);
+    }
+  }
+
+  if (audioCodec === 'none') {
+    parts.push('-an');
+  } else {
+    parts.push('-c:a', audioCodec);
+    if (audioBitrate && audioCodec !== 'copy') {
+      parts.push('-b:a', audioBitrate);
+    }
+  }
+
+  parts.push(`"${outputPath}"`);
+  return parts.join(' ');
+}
+
 function App() {
   const [activeTool, setActiveTool] = useState<ToolId>('lossless-cut');
+
   const [sourcePath, setSourcePath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [probe, setProbe] = useState<ProbeResult | null>(null);
@@ -122,12 +163,39 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [lastLog, setLastLog] = useState('');
 
+  const [convertSourcePath, setConvertSourcePath] = useState('');
+  const [convertOutputPath, setConvertOutputPath] = useState('');
+  const [convertProbe, setConvertProbe] = useState<ProbeResult | null>(null);
+  const [convertPreset, setConvertPreset] = useState('MP4 Safe Convert');
+  const [convertContainer, setConvertContainer] = useState('mp4');
+  const [convertVideoCodec, setConvertVideoCodec] = useState('mpeg4');
+  const [convertAudioCodec, setConvertAudioCodec] = useState('aac');
+  const [convertVideoBitrate, setConvertVideoBitrate] = useState('5M');
+  const [convertAudioBitrate, setConvertAudioBitrate] = useState('192k');
+  const [convertStatus, setConvertStatus] = useState('No file loaded');
+  const [convertError, setConvertError] = useState('');
+  const [isConvertBusy, setIsConvertBusy] = useState(false);
+  const [convertLog, setConvertLog] = useState('');
+
   const durationSeconds = Number(probe?.format?.duration || 0);
   const durationLabel = secondsToTimestamp(durationSeconds);
   const videoStream = probe?.streams?.find((stream) => stream.codec_type === 'video');
   const audioStream = probe?.streams?.find((stream) => stream.codec_type === 'audio');
   const outputExtension = extensionFromPath(outputPath || sourcePath || 'output.mp4');
-  const commandPreview = buildCommandPreview(sourcePath, outputPath, start, end, videoCodec, audioCodec);
+  const commandPreview = buildLosslessCommandPreview(sourcePath, outputPath, start, end, videoCodec, audioCodec);
+
+  const convertDurationSeconds = Number(convertProbe?.format?.duration || 0);
+  const convertDurationLabel = secondsToTimestamp(convertDurationSeconds);
+  const convertVideoStream = convertProbe?.streams?.find((stream) => stream.codec_type === 'video');
+  const convertAudioStream = convertProbe?.streams?.find((stream) => stream.codec_type === 'audio');
+  const convertCommandPreview = buildConvertCommandPreview(
+    convertSourcePath,
+    convertOutputPath,
+    convertVideoCodec,
+    convertAudioCodec,
+    convertVideoBitrate,
+    convertAudioBitrate
+  );
   const activeModule = moduleDescriptions[activeTool];
 
   useEffect(() => {
@@ -146,6 +214,23 @@ function App() {
       setAudioCodec('aac');
     }
   }, [preset]);
+
+  useEffect(() => {
+    const selectedPreset = convertPresets.find((entry) => entry.name === convertPreset);
+    if (!selectedPreset) {
+      return;
+    }
+
+    setConvertContainer(selectedPreset.container);
+    setConvertVideoCodec(selectedPreset.videoCodec);
+    setConvertAudioCodec(selectedPreset.audioCodec);
+    setConvertVideoBitrate(selectedPreset.videoBitrate);
+    setConvertAudioBitrate(selectedPreset.audioBitrate);
+
+    if (convertSourcePath) {
+      setConvertOutputPath(replaceExtension(convertSourcePath, '_convert', selectedPreset.container));
+    }
+  }, [convertPreset]);
 
   async function handleOpenFile() {
     if (!window.desktop) {
@@ -192,7 +277,7 @@ function App() {
       return;
     }
 
-    const selectedOutput = await window.desktop.saveFile(sourcePath, outputExtension);
+    const selectedOutput = await window.desktop.saveFile(sourcePath, outputExtension, '_trim');
     if (selectedOutput) {
       setOutputPath(selectedOutput);
     }
@@ -240,6 +325,97 @@ function App() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function handleOpenConvertFile() {
+    if (!window.desktop) {
+      setConvertError('Desktop API is not available.');
+      return;
+    }
+
+    setConvertError('');
+    setIsConvertBusy(true);
+    setConvertStatus('Loading file...');
+
+    try {
+      const selectedPath = await window.desktop.openFile();
+      if (!selectedPath) {
+        setConvertStatus('File selection cancelled');
+        return;
+      }
+
+      const result = await window.desktop.probeMedia(selectedPath);
+      setConvertSourcePath(selectedPath);
+      setConvertProbe(result);
+      setConvertOutputPath(replaceExtension(selectedPath, '_convert', convertContainer));
+      setConvertStatus('File analyzed');
+      setConvertLog('');
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      setConvertError(message);
+      setConvertStatus('Error');
+    } finally {
+      setIsConvertBusy(false);
+    }
+  }
+
+  async function handlePickConvertOutput() {
+    if (!window.desktop || !convertSourcePath) {
+      return;
+    }
+
+    const selectedOutput = await window.desktop.saveFile(convertSourcePath, convertContainer, '_convert');
+    if (selectedOutput) {
+      setConvertOutputPath(selectedOutput);
+    }
+  }
+
+  async function handleRunConvert() {
+    if (!window.desktop) {
+      setConvertError('Desktop API is not available.');
+      return;
+    }
+
+    if (!convertSourcePath || !convertOutputPath) {
+      setConvertError('Please choose a source file and an output path first.');
+      return;
+    }
+
+    setConvertError('');
+    setIsConvertBusy(true);
+    setConvertStatus('Running ffmpeg...');
+
+    try {
+      const result = await window.desktop.runConvert({
+        sourcePath: convertSourcePath,
+        outputPath: convertOutputPath,
+        videoCodec: convertVideoCodec,
+        audioCodec: convertAudioCodec,
+        videoBitrate: convertVideoBitrate,
+        audioBitrate: convertAudioBitrate
+      });
+
+      setConvertStatus('Job finished');
+      setConvertLog(`${result.command}\n\n${result.log}`.trim());
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      setConvertError(message);
+      setConvertStatus('Error');
+    } finally {
+      setIsConvertBusy(false);
+    }
+  }
+
+  function renderComplianceNotice() {
+    return (
+      <div className="compliance-box">
+        <strong>FFmpeg compliance notice</strong>
+        <p>
+          This app currently calls external <code>ffmpeg</code> and <code>ffprobe</code> binaries from the local system PATH.
+          This build does not bundle FFmpeg binaries, and the default convert presets avoid assuming GPL-only or nonfree codec builds.
+        </p>
+      </div>
+    );
   }
 
   function renderLosslessCut() {
@@ -397,6 +573,194 @@ function App() {
             </div>
           </div>
         </section>
+
+        {renderComplianceNotice()}
+      </>
+    );
+  }
+
+  function renderConvert() {
+    return (
+      <>
+        <section className="panel panel-grid">
+          <div className="panel-block viewer-block">
+            <div className="panel-title-row">
+              <h3>Source</h3>
+              <span>{convertSourcePath ? fileNameFromPath(convertSourcePath) : 'No file'}</span>
+            </div>
+
+            <div className="viewer-placeholder">
+              <span>{convertSourcePath ? 'Conversion source loaded' : 'No file loaded'}</span>
+            </div>
+
+            <div className="time-fields compact-fields">
+              <label>
+                <span>Duration</span>
+                <input value={convertDurationLabel} readOnly />
+              </label>
+              <label>
+                <span>Source format</span>
+                <input value={convertProbe?.format?.format_long_name || '-'} readOnly />
+              </label>
+              <label>
+                <span>Target container</span>
+                <input value={convertContainer} readOnly />
+              </label>
+            </div>
+
+            <div className="path-list">
+              <div>
+                <span>Source path</span>
+                <strong>{convertSourcePath || '-'}</strong>
+              </div>
+              <div>
+                <span>Output path</span>
+                <strong>{convertOutputPath || '-'}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="panel-block settings-block">
+            <div className="panel-title-row">
+              <h3>Convert job</h3>
+              <span>{convertStatus}</span>
+            </div>
+
+            <div className="form-grid">
+              <label>
+                <span>Preset</span>
+                <select value={convertPreset} onChange={(event) => setConvertPreset(event.target.value)}>
+                  {convertPresets.map((entry) => (
+                    <option key={entry.id} value={entry.name}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Container</span>
+                <select value={convertContainer} onChange={(event) => setConvertContainer(event.target.value)}>
+                  <option value="mp4">mp4</option>
+                  <option value="mkv">mkv</option>
+                  <option value="mov">mov</option>
+                  <option value="flac">flac</option>
+                  <option value="wav">wav</option>
+                </select>
+              </label>
+              <label>
+                <span>Video codec</span>
+                <select value={convertVideoCodec} onChange={(event) => setConvertVideoCodec(event.target.value)}>
+                  <option value="mpeg4">mpeg4</option>
+                  <option value="ffv1">ffv1</option>
+                  <option value="copy">copy</option>
+                  <option value="none">none</option>
+                </select>
+              </label>
+              <label>
+                <span>Audio codec</span>
+                <select value={convertAudioCodec} onChange={(event) => setConvertAudioCodec(event.target.value)}>
+                  <option value="aac">aac</option>
+                  <option value="flac">flac</option>
+                  <option value="pcm_s16le">pcm_s16le</option>
+                  <option value="copy">copy</option>
+                  <option value="none">none</option>
+                </select>
+              </label>
+              <label>
+                <span>Video bitrate</span>
+                <input
+                  value={convertVideoBitrate}
+                  onChange={(event) => setConvertVideoBitrate(event.target.value)}
+                  placeholder="5M"
+                  disabled={convertVideoCodec === 'copy' || convertVideoCodec === 'none'}
+                />
+              </label>
+              <label>
+                <span>Audio bitrate</span>
+                <input
+                  value={convertAudioBitrate}
+                  onChange={(event) => setConvertAudioBitrate(event.target.value)}
+                  placeholder="192k"
+                  disabled={convertAudioCodec === 'copy' || convertAudioCodec === 'none'}
+                />
+              </label>
+            </div>
+
+            <div className="status-list">
+              <div>
+                <span>Source video</span>
+                <strong>
+                  {convertVideoStream?.codec_name
+                    ? `${convertVideoStream.codec_name}${convertVideoStream.width ? ` ${convertVideoStream.width}x${convertVideoStream.height}` : ''}`
+                    : '-'}
+                </strong>
+              </div>
+              <div>
+                <span>Source audio</span>
+                <strong>
+                  {convertAudioStream?.codec_name
+                    ? `${convertAudioStream.codec_name}${convertAudioStream.channels ? ` ${convertAudioStream.channels}ch` : ''}`
+                    : '-'}
+                </strong>
+              </div>
+              <div>
+                <span>Safety profile</span>
+                <strong>Defaults avoid GPL-only and nonfree assumptions</strong>
+              </div>
+              <div>
+                <span>FFmpeg source</span>
+                <strong>External system installation</strong>
+              </div>
+            </div>
+
+            <div className="command-box">{convertCommandPreview}</div>
+
+            {convertError ? <div className="message error">{convertError}</div> : null}
+            {convertLog ? <pre className="log-box">{convertLog}</pre> : null}
+          </div>
+        </section>
+
+        <section className="bottom-grid">
+          <div className="panel panel-block">
+            <div className="panel-title-row">
+              <h3>Safe default presets</h3>
+              <span>{convertPresets.length}</span>
+            </div>
+
+            <div className="tool-table">
+              {convertPresets.map((entry) => (
+                <div key={entry.id} className="tool-row">
+                  <strong>{entry.name}</strong>
+                  <span>{`${entry.container} | ${entry.videoCodec} | ${entry.audioCodec}`}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel panel-block">
+            <div className="panel-title-row">
+              <h3>Compliance design</h3>
+              <span>Current build</span>
+            </div>
+
+            <div className="tool-table">
+              <div className="tool-row">
+                <strong>No bundled FFmpeg binaries</strong>
+                <span>This desktop build calls the local system installation instead.</span>
+              </div>
+              <div className="tool-row">
+                <strong>Official notice included</strong>
+                <span>See README and THIRD_PARTY_NOTICES for licensing notes and source links.</span>
+              </div>
+              <div className="tool-row">
+                <strong>Safer defaults</strong>
+                <span>Preset codecs avoid relying on GPL-only or nonfree FFmpeg configurations.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {renderComplianceNotice()}
       </>
     );
   }
@@ -446,6 +810,11 @@ function App() {
             </button>
           ))}
         </nav>
+
+        <div className="sidebar-footer">
+          <strong>Licensing</strong>
+          <p>FFmpeg is not bundled in this build. See README and THIRD_PARTY_NOTICES.</p>
+        </div>
       </aside>
 
       <main className="workspace">
@@ -456,34 +825,44 @@ function App() {
           </div>
 
           <div className="header-actions">
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={handleOpenFile}
-              disabled={isBusy || activeTool !== 'lossless-cut'}
-            >
-              Open file
-            </button>
-            <button
-              type="button"
-              className="button"
-              onClick={handlePickOutput}
-              disabled={!sourcePath || isBusy || activeTool !== 'lossless-cut'}
-            >
-              Choose output
-            </button>
-            <button
-              type="button"
-              className="button"
-              onClick={handleRunLosslessCut}
-              disabled={!sourcePath || isBusy || activeTool !== 'lossless-cut'}
-            >
-              Run
-            </button>
+            {activeTool === 'lossless-cut' ? (
+              <>
+                <button type="button" className="button button-primary" onClick={handleOpenFile} disabled={isBusy}>
+                  Open file
+                </button>
+                <button type="button" className="button" onClick={handlePickOutput} disabled={!sourcePath || isBusy}>
+                  Choose output
+                </button>
+                <button type="button" className="button" onClick={handleRunLosslessCut} disabled={!sourcePath || isBusy}>
+                  Run
+                </button>
+              </>
+            ) : null}
+
+            {activeTool === 'smart-convert' ? (
+              <>
+                <button type="button" className="button button-primary" onClick={handleOpenConvertFile} disabled={isConvertBusy}>
+                  Open file
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={handlePickConvertOutput}
+                  disabled={!convertSourcePath || isConvertBusy}
+                >
+                  Choose output
+                </button>
+                <button type="button" className="button" onClick={handleRunConvert} disabled={!convertSourcePath || isConvertBusy}>
+                  Run
+                </button>
+              </>
+            ) : null}
           </div>
         </header>
 
-        {activeTool === 'lossless-cut' ? renderLosslessCut() : renderPlaceholder()}
+        {activeTool === 'lossless-cut' ? renderLosslessCut() : null}
+        {activeTool === 'smart-convert' ? renderConvert() : null}
+        {activeTool !== 'lossless-cut' && activeTool !== 'smart-convert' ? renderPlaceholder() : null}
       </main>
     </div>
   );

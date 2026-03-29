@@ -66,9 +66,34 @@ function runCommand(command, args) {
   });
 }
 
-function formatOutputPath(inputPath, extension) {
+function formatOutputPath(inputPath, extension, suffix = '_trim') {
   const parsed = path.parse(inputPath);
-  return path.join(parsed.dir, `${parsed.name}_trim.${extension}`);
+  return path.join(parsed.dir, `${parsed.name}${suffix}.${extension}`);
+}
+
+function buildConvertArgs(payload) {
+  const args = ['-y', '-i', payload.sourcePath];
+
+  if (payload.videoCodec === 'none') {
+    args.push('-vn');
+  } else {
+    args.push('-c:v', payload.videoCodec);
+    if (payload.videoBitrate && payload.videoCodec !== 'copy') {
+      args.push('-b:v', payload.videoBitrate);
+    }
+  }
+
+  if (payload.audioCodec === 'none') {
+    args.push('-an');
+  } else {
+    args.push('-c:a', payload.audioCodec);
+    if (payload.audioBitrate && payload.audioCodec !== 'copy') {
+      args.push('-b:a', payload.audioBitrate);
+    }
+  }
+
+  args.push(payload.outputPath);
+  return args;
 }
 
 ipcMain.handle('desktop:open-file', async () => {
@@ -94,10 +119,10 @@ ipcMain.handle('desktop:open-file', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('desktop:save-file', async (_event, sourcePath, extension) => {
+ipcMain.handle('desktop:save-file', async (_event, sourcePath, extension, suffix) => {
   const result = await dialog.showSaveDialog({
     title: 'Select output file',
-    defaultPath: formatOutputPath(sourcePath, extension),
+    defaultPath: formatOutputPath(sourcePath, extension, suffix),
     filters: [
       {
         name: `${extension.toUpperCase()} file`,
@@ -140,6 +165,16 @@ ipcMain.handle('desktop:run-lossless-cut', async (_event, payload) => {
 
   args.push('-i', payload.sourcePath, '-c:v', payload.videoCodec, '-c:a', payload.audioCodec, payload.outputPath);
 
+  const result = await runCommand('ffmpeg', args);
+
+  return {
+    command: ['ffmpeg', ...args].join(' '),
+    log: result.stderr || result.stdout
+  };
+});
+
+ipcMain.handle('desktop:run-convert', async (_event, payload) => {
+  const args = buildConvertArgs(payload);
   const result = await runCommand('ffmpeg', args);
 
   return {

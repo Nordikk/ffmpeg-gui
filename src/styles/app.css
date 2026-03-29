@@ -40,6 +40,10 @@ button {
   cursor: pointer;
 }
 
+code {
+  font-family: Consolas, "Courier New", monospace;
+}
+
 #root {
   min-height: 100vh;
 }
@@ -51,13 +55,12 @@ button {
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   border-right: 1px solid var(--border);
   background: #14181d;
   padding: 20px 16px;
-}
-
-.sidebar-header {
-  margin-bottom: 18px;
 }
 
 .sidebar-header h1 {
@@ -76,7 +79,9 @@ label span,
 .status-list span,
 .path-list span,
 .placeholder-block p,
-.placeholder-notes span {
+.placeholder-notes span,
+.sidebar-footer p,
+.compliance-box p {
   color: var(--text-muted);
 }
 
@@ -106,6 +111,17 @@ label span,
 
 .module-title {
   font-weight: 600;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.sidebar-footer strong {
+  display: block;
+  margin-bottom: 6px;
 }
 
 .workspace {
@@ -219,6 +235,10 @@ label span,
 .time-fields {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 12px;
+}
+
+.compact-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .form-grid {
@@ -348,6 +368,19 @@ select {
   max-width: 720px;
 }
 
+.compliance-box {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #171c22;
+}
+
+.compliance-box strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
 @media (max-width: 1100px) {
   .app-shell,
   .panel-grid,
@@ -370,6 +403,7 @@ select {
   .workspace-header,
   .header-actions,
   .time-fields,
+  .compact-fields,
   .form-grid {
     grid-template-columns: 1fr;
     display: grid;

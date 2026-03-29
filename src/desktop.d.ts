@@ -29,15 +29,25 @@ type LosslessCutPayload = {
   audioCodec: string;
 };
 
+type ConvertPayload = {
+  sourcePath: string;
+  outputPath: string;
+  videoCodec: string;
+  audioCodec: string;
+  videoBitrate: string;
+  audioBitrate: string;
+};
+
 declare global {
   interface Window {
     desktop?: {
       platform: string;
       isDesktop: boolean;
       openFile: () => Promise<string | null>;
-      saveFile: (sourcePath: string, extension: string) => Promise<string | null>;
+      saveFile: (sourcePath: string, extension: string, suffix?: string) => Promise<string | null>;
       probeMedia: (filePath: string) => Promise<ProbeResult>;
       runLosslessCut: (payload: LosslessCutPayload) => Promise<{ command: string; log: string }>;
+      runConvert: (payload: ConvertPayload) => Promise<{ command: string; log: string }>;
     };
   }
 }
