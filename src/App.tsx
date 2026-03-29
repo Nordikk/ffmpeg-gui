@@ -417,6 +417,31 @@ function formatDateTime(value: string) {
   return date.toLocaleString();
 }
 
+function errorMessageFromUnknown(caughtError: unknown, fallback: string) {
+  if (caughtError instanceof Error && caughtError.message.trim()) {
+    return caughtError.message.trim();
+  }
+
+  if (typeof caughtError === 'string' && caughtError.trim()) {
+    return caughtError.trim();
+  }
+
+  if (caughtError && typeof caughtError === 'object') {
+    const message =
+      'message' in caughtError && typeof caughtError.message === 'string'
+        ? caughtError.message
+        : 'error' in caughtError && typeof caughtError.error === 'string'
+          ? caughtError.error
+          : '';
+
+    if (message.trim()) {
+      return message.trim();
+    }
+  }
+
+  return fallback;
+}
+
 function nearestKeyframe(value: number, keyframes: number[]) {
   if (!keyframes.length) {
     return value;
@@ -1074,7 +1099,7 @@ function App() {
         return;
       }
 
-      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      const message = errorMessageFromUnknown(caughtError, 'Analysis failed');
       setError(message);
       setStatus('Error');
     } finally {
@@ -1113,7 +1138,7 @@ function App() {
       setConvertStatus('Ready');
       setConvertLog('');
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      const message = errorMessageFromUnknown(caughtError, 'Analysis failed');
       setConvertError(message);
       setConvertStatus('Error');
     } finally {
@@ -1136,7 +1161,7 @@ function App() {
       setAudioStatus('Ready');
       setAudioLog('');
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      const message = errorMessageFromUnknown(caughtError, 'Analysis failed');
       setAudioError(message);
       setAudioStatus('Error');
     } finally {
@@ -1160,7 +1185,7 @@ function App() {
       setFrameStatus('Ready');
       setFrameLog('');
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      const message = errorMessageFromUnknown(caughtError, 'Analysis failed');
       setFrameError(message);
       setFrameStatus('Error');
     } finally {
@@ -1239,7 +1264,7 @@ function App() {
       setLastLog(`${result.command}\n\n${result.log}`.trim());
       updateJob(jobId, 'Done', `${start} -> ${end}`);
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
       setError(message);
       setStatus('Error');
       updateJob(jobId, 'Error', message);
@@ -1315,7 +1340,7 @@ function App() {
       setConvertLog(`${result.command}\n\n${result.log}`.trim());
       updateJob(jobId, 'Done', `${convertContainer} ${convertVideoCodec}/${convertAudioCodec}`);
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
       setConvertError(message);
       setConvertStatus('Error');
       updateJob(jobId, 'Error', message);
@@ -1402,7 +1427,7 @@ function App() {
       setAudioLog(`${result.command}\n\n${result.log}`.trim());
       updateJob(jobId, 'Done', `${audioCodecSetting} ${audioBitrateSetting || 'default'}`);
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
       setAudioError(message);
       setAudioStatus('Error');
       updateJob(jobId, 'Error', message);
@@ -1469,7 +1494,7 @@ function App() {
       setFrameLog(`${result.command}\n\n${result.log}`.trim());
       updateJob(jobId, 'Done', `${frameImageFormat} @ ${frameFps || 'native'} fps`);
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
       setFrameError(message);
       setFrameStatus('Error');
       updateJob(jobId, 'Error', message);
@@ -1531,7 +1556,7 @@ function App() {
       setBatchLog(`${combinedCommands}\n\n${result.log}`.trim());
       updateJob(jobId, 'Done', `${result.outputs.length} outputs`);
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
       setBatchError(message);
       setBatchStatus('Error');
       updateJob(jobId, 'Error', message);

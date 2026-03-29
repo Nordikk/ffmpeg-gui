@@ -112,6 +112,13 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
+fn format_command_line(command: &Path, args: &[String]) -> String {
+    std::iter::once(command.display().to_string())
+        .chain(args.iter().map(|arg| shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn fallback_search_dirs() -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     {
@@ -221,6 +228,7 @@ fn build_convert_args(payload: &ConvertPayload) -> Vec<String> {
 
 fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> {
     let resolved_command = resolve_binary(command)?;
+    let command_line = format_command_line(&resolved_command, args);
     let output = Command::new(&resolved_command)
         .args(args)
         .output()
@@ -230,15 +238,22 @@ fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Ok(CommandResult {
-            command: std::iter::once(resolved_command.display().to_string())
-                .chain(args.iter().map(|arg| shell_quote(arg)))
-                .collect::<Vec<_>>()
-                .join(" "),
+            command: command_line,
             log: if stderr.is_empty() { stdout } else { stderr },
         });
     }
 
-    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let details = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("{command} exited with status {}", output.status)
+    };
+
+    Err(format!("Command: {command_line}\n\n{details}"))
 }
 
 fn probe_binary(binary: &str) -> BinaryStatus {
