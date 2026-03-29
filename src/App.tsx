@@ -1,5 +1,5 @@
 import { TauriEvent, listen as listenEvent } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -148,6 +148,10 @@ function replaceExtension(filePath: string, suffix: string, extension: string) {
 function filePathToVideoUrl(filePath: string) {
   if (!filePath) {
     return '';
+  }
+
+  if (isTauri()) {
+    return convertFileSrc(filePath);
   }
 
   const normalized = filePath.replaceAll('\\', '/');
@@ -384,6 +388,7 @@ function App() {
   const domDragDepthRef = useRef(0);
   const activeToolRef = useRef<ToolId>('lossless-cut');
   const convertContainerRef = useRef('mp4');
+  const losslessLoadRequestRef = useRef(0);
   const dragRef = useRef<{ active: false } | { active: true; mode: 'move' | 'start' | 'end'; startX: number; startStart: number; startEnd: number }>({
     active: false
   });
@@ -807,37 +812,82 @@ function App() {
     void loadLosslessFile(filePath);
   }
 
+  function resetLosslessPreviewElement() {
+    if (!videoRef.current) {
+      return;
+    }
+
+    try {
+      videoRef.current.pause();
+      videoRef.current.removeAttribute('src');
+      videoRef.current.load();
+    } catch {
+    }
+  }
+
   async function loadLosslessFile(selectedPath: string) {
+    const requestId = ++losslessLoadRequestRef.current;
+    const extension = extensionFromPath(selectedPath);
+    const suggestedOutput = selectedPath.replace(/\.[^.]+$/, `_trim.${extension}`);
+
     setError('');
     setIsBusy(true);
     setStatus('Loading...');
+    setLastLog('');
+    setProbe(null);
+    setKeyframes([]);
+    setPreviewTime(0);
+    setStart('00:00:00');
+    setEnd('00:00:00');
+    resetLosslessPreviewElement();
+    setSourcePath(selectedPath);
+    setOutputPath(suggestedOutput);
+    setManualSourcePath(selectedPath);
 
     try {
-      const [result, keyframeProbe] = await Promise.all([
-        invoke<ProbeResult>('probe_media', { filePath: selectedPath }),
-        invoke<{ keyframes: number[] }>('probe_keyframes', { filePath: selectedPath })
-      ]);
+      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
+
+      if (requestId !== losslessLoadRequestRef.current) {
+        return;
+      }
+
       const duration = Number(result.format?.duration || 0);
       const initialEnd = secondsToTimestamp(duration);
-      const extension = extensionFromPath(selectedPath);
-      const suggestedOutput = selectedPath.replace(/\.[^.]+$/, `_trim.${extension}`);
 
-      setSourcePath(selectedPath);
-      setOutputPath(suggestedOutput);
       setProbe(result);
-      setKeyframes(keyframeProbe.keyframes || []);
       setStart('00:00:00');
       setEnd(initialEnd);
       setPreviewTime(0);
       setStatus('Ready');
-      setLastLog('');
     } catch (caughtError) {
+      if (requestId !== losslessLoadRequestRef.current) {
+        return;
+      }
+
       const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
       setError(message);
       setStatus('Error');
     } finally {
-      setIsBusy(false);
+      if (requestId === losslessLoadRequestRef.current) {
+        setIsBusy(false);
+      }
     }
+
+    void invoke<{ keyframes: number[] }>('probe_keyframes', { filePath: selectedPath })
+      .then((keyframeProbe) => {
+        if (requestId !== losslessLoadRequestRef.current) {
+          return;
+        }
+
+        setKeyframes(keyframeProbe.keyframes || []);
+      })
+      .catch(() => {
+        if (requestId !== losslessLoadRequestRef.current) {
+          return;
+        }
+
+        setKeyframes([]);
+      });
   }
 
   async function loadConvertFile(selectedPath: string) {
@@ -869,7 +919,7 @@ function App() {
         return;
       }
 
-      await loadLosslessFile(selectedPath);
+      void loadLosslessFile(selectedPath);
     } catch {
     }
   }
@@ -880,7 +930,7 @@ function App() {
       return;
     }
 
-    await loadLosslessFile(manualSourcePath.trim());
+    void loadLosslessFile(manualSourcePath.trim());
   }
 
   async function handlePickOutput() {
@@ -948,7 +998,7 @@ function App() {
         return;
       }
 
-      await loadConvertFile(selectedPath);
+      void loadConvertFile(selectedPath);
     } catch {
     }
   }
@@ -959,7 +1009,7 @@ function App() {
       return;
     }
 
-    await loadConvertFile(manualConvertPath.trim());
+    void loadConvertFile(manualConvertPath.trim());
   }
 
   async function handlePickConvertOutput() {
@@ -1209,6 +1259,7 @@ function App() {
             <div className="video-preview-shell">
               {sourcePath ? (
                 <video
+                  key={videoPreviewUrl}
                   ref={videoRef}
                   className="video-preview"
                   src={videoPreviewUrl}
@@ -1220,6 +1271,10 @@ function App() {
                     setPreviewTime(nextTime);
                   }}
                   onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)}
+                  onError={() => {
+                    setError('Preview could not be loaded for this file.');
+                    setStatus('Preview error');
+                  }}
                 />
               ) : (
                 <button type="button" className="viewer-placeholder quick-load" onClick={handleOpenFile}>

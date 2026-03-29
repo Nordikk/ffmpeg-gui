@@ -2,7 +2,7 @@ use rfd::FileDialog;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tauri::Builder;
+use tauri::{async_runtime, Builder};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,38 +149,48 @@ fn save_file(source_path: String, extension: String, suffix: Option<String>) -> 
 }
 
 #[tauri::command]
-fn probe_media(file_path: String) -> Result<serde_json::Value, String> {
-    let args = vec![
-        "-v".to_string(),
-        "error".to_string(),
-        "-print_format".to_string(),
-        "json".to_string(),
-        "-show_format".to_string(),
-        "-show_streams".to_string(),
-        file_path,
-    ];
+async fn probe_media(file_path: String) -> Result<serde_json::Value, String> {
+    let result = async_runtime::spawn_blocking(move || {
+        let args = vec![
+            "-v".to_string(),
+            "error".to_string(),
+            "-print_format".to_string(),
+            "json".to_string(),
+            "-show_format".to_string(),
+            "-show_streams".to_string(),
+            file_path,
+        ];
 
-    let result = run_command("ffprobe", &args)?;
+        run_command("ffprobe", &args)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
     serde_json::from_str(&result.log).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn probe_keyframes(file_path: String) -> Result<KeyframeProbe, String> {
-    let args = vec![
-        "-v".to_string(),
-        "error".to_string(),
-        "-skip_frame".to_string(),
-        "nokey".to_string(),
-        "-select_streams".to_string(),
-        "v:0".to_string(),
-        "-show_entries".to_string(),
-        "frame=pts_time".to_string(),
-        "-of".to_string(),
-        "csv=p=0".to_string(),
-        file_path,
-    ];
+async fn probe_keyframes(file_path: String) -> Result<KeyframeProbe, String> {
+    let result = async_runtime::spawn_blocking(move || {
+        let args = vec![
+            "-v".to_string(),
+            "error".to_string(),
+            "-skip_frame".to_string(),
+            "nokey".to_string(),
+            "-select_streams".to_string(),
+            "v:0".to_string(),
+            "-show_entries".to_string(),
+            "frame=pts_time".to_string(),
+            "-of".to_string(),
+            "csv=p=0".to_string(),
+            file_path,
+        ];
 
-    let result = run_command("ffprobe", &args)?;
+        run_command("ffprobe", &args)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+
     let keyframes = result
         .log
         .lines()
@@ -192,60 +202,68 @@ fn probe_keyframes(file_path: String) -> Result<KeyframeProbe, String> {
 }
 
 #[tauri::command]
-fn run_lossless_cut(payload: LosslessCutPayload) -> Result<CommandResult, String> {
-    let mut args = vec!["-y".to_string()];
+async fn run_lossless_cut(payload: LosslessCutPayload) -> Result<CommandResult, String> {
+    async_runtime::spawn_blocking(move || {
+        let mut args = vec!["-y".to_string()];
 
-    if !payload.start.is_empty() {
-        args.push("-ss".to_string());
-        args.push(payload.start);
-    }
+        if !payload.start.is_empty() {
+            args.push("-ss".to_string());
+            args.push(payload.start);
+        }
 
-    if !payload.end.is_empty() {
-        args.push("-to".to_string());
-        args.push(payload.end);
-    }
+        if !payload.end.is_empty() {
+            args.push("-to".to_string());
+            args.push(payload.end);
+        }
 
-    args.extend([
-        "-i".to_string(),
-        payload.source_path,
-        "-c:v".to_string(),
-        payload.video_codec,
-        "-c:a".to_string(),
-        payload.audio_codec,
-        payload.output_path,
-    ]);
+        args.extend([
+            "-i".to_string(),
+            payload.source_path,
+            "-c:v".to_string(),
+            payload.video_codec,
+            "-c:a".to_string(),
+            payload.audio_codec,
+            payload.output_path,
+        ]);
 
-    run_command("ffmpeg", &args)
+        run_command("ffmpeg", &args)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
-    let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path];
+async fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
+    async_runtime::spawn_blocking(move || {
+        let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path];
 
-    if payload.video_codec == "none" {
-        args.push("-vn".to_string());
-    } else {
-        args.push("-c:v".to_string());
-        args.push(payload.video_codec.clone());
-        if !payload.video_bitrate.is_empty() && payload.video_codec != "copy" {
-            args.push("-b:v".to_string());
-            args.push(payload.video_bitrate);
+        if payload.video_codec == "none" {
+            args.push("-vn".to_string());
+        } else {
+            args.push("-c:v".to_string());
+            args.push(payload.video_codec.clone());
+            if !payload.video_bitrate.is_empty() && payload.video_codec != "copy" {
+                args.push("-b:v".to_string());
+                args.push(payload.video_bitrate);
+            }
         }
-    }
 
-    if payload.audio_codec == "none" {
-        args.push("-an".to_string());
-    } else {
-        args.push("-c:a".to_string());
-        args.push(payload.audio_codec.clone());
-        if !payload.audio_bitrate.is_empty() && payload.audio_codec != "copy" {
-            args.push("-b:a".to_string());
-            args.push(payload.audio_bitrate);
+        if payload.audio_codec == "none" {
+            args.push("-an".to_string());
+        } else {
+            args.push("-c:a".to_string());
+            args.push(payload.audio_codec.clone());
+            if !payload.audio_bitrate.is_empty() && payload.audio_codec != "copy" {
+                args.push("-b:a".to_string());
+                args.push(payload.audio_bitrate);
+            }
         }
-    }
 
-    args.push(payload.output_path);
-    run_command("ffmpeg", &args)
+        args.push(payload.output_path);
+        run_command("ffmpeg", &args)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
