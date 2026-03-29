@@ -276,6 +276,21 @@ label span,
   overflow: hidden;
 }
 
+.quick-load {
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: center;
+}
+
+.quick-load strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
 .compact-placeholder {
   min-height: 160px;
 }
@@ -370,9 +385,15 @@ label span,
 
 .time-fields,
 .form-grid,
-.path-list {
+.path-list,
+.manual-load-row {
   display: grid;
   gap: 10px;
+}
+
+.manual-load-row {
+  grid-template-columns: 1fr auto;
+  margin-top: 10px;
 }
 
 .time-fields {
@@ -545,7 +566,8 @@ select {
   .debug-grid,
   .time-fields,
   .compact-fields,
-  .form-grid {
+  .form-grid,
+  .manual-load-row {
     display: grid;
     grid-template-columns: 1fr;
   }

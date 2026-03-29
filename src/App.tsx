@@ -240,6 +240,7 @@ function App() {
   const [previewTime, setPreviewTime] = useState(0);
   const [keyframes, setKeyframes] = useState<number[]>([]);
   const [snapToKeyframes, setSnapToKeyframes] = useState(true);
+  const [manualSourcePath, setManualSourcePath] = useState('');
 
   const [convertSourcePath, setConvertSourcePath] = useState('');
   const [convertOutputPath, setConvertOutputPath] = useState('');
@@ -254,6 +255,7 @@ function App() {
   const [convertError, setConvertError] = useState('');
   const [isConvertBusy, setIsConvertBusy] = useState(false);
   const [convertLog, setConvertLog] = useState('');
+  const [manualConvertPath, setManualConvertPath] = useState('');
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [isDropTargetActive, setIsDropTargetActive] = useState(false);
   const [dropDebug, setDropDebug] = useState<DropDebugState>({
@@ -576,6 +578,15 @@ function App() {
     }
   }
 
+  async function handleLoadManualSourcePath() {
+    if (!manualSourcePath.trim()) {
+      setError('Please enter a file path first.');
+      return;
+    }
+
+    await loadLosslessFile(manualSourcePath.trim());
+  }
+
   async function handlePickOutput() {
     if (!sourcePath) {
       return;
@@ -644,6 +655,15 @@ function App() {
       await loadConvertFile(selectedPath);
     } catch {
     }
+  }
+
+  async function handleLoadManualConvertPath() {
+    if (!manualConvertPath.trim()) {
+      setConvertError('Please enter a file path first.');
+      return;
+    }
+
+    await loadConvertFile(manualConvertPath.trim());
   }
 
   async function handlePickConvertOutput() {
@@ -898,10 +918,22 @@ function App() {
                   onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)}
                 />
               ) : (
-                <div className="viewer-placeholder">
-                  <span>No file loaded</span>
-                </div>
+                <button type="button" className="viewer-placeholder quick-load" onClick={handleOpenFile}>
+                  <strong>Click to open a file</strong>
+                  <span>Drag and drop may be blocked by Windows. Use click or paste a path below.</span>
+                </button>
               )}
+            </div>
+
+            <div className="manual-load-row">
+              <input
+                value={manualSourcePath}
+                onChange={(event) => setManualSourcePath(event.target.value)}
+                placeholder="Paste a local file path"
+              />
+              <button type="button" className="button" onClick={handleLoadManualSourcePath} disabled={isBusy}>
+                Load Path
+              </button>
             </div>
 
             <div className="preview-toolbar">
@@ -1057,7 +1089,25 @@ function App() {
             </div>
 
             <div className="viewer-placeholder compact-placeholder">
-              <span>{convertSourcePath ? 'File loaded' : 'No file loaded'}</span>
+              {convertSourcePath ? (
+                <span>File loaded</span>
+              ) : (
+                <button type="button" className="viewer-placeholder quick-load" onClick={handleOpenConvertFile}>
+                  <strong>Click to open a file</strong>
+                  <span>Drag and drop may be blocked by Windows. Use click or paste a path below.</span>
+                </button>
+              )}
+            </div>
+
+            <div className="manual-load-row">
+              <input
+                value={manualConvertPath}
+                onChange={(event) => setManualConvertPath(event.target.value)}
+                placeholder="Paste a local file path"
+              />
+              <button type="button" className="button" onClick={handleLoadManualConvertPath} disabled={isConvertBusy}>
+                Load Path
+              </button>
             </div>
 
             <div className="time-fields compact-fields">
