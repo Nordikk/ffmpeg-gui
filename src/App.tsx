@@ -38,7 +38,7 @@ type ToolStatus = {
 
 type JobRecord = {
   id: string;
-  kind: 'cut' | 'convert';
+  kind: 'cut' | 'convert' | 'audio' | 'frames' | 'batch';
   source: string;
   output: string;
   status: 'Running' | 'Done' | 'Error';
@@ -74,15 +74,15 @@ const moduleDescriptions: Record<ToolId, { title: string; description: string }>
   },
   'audio-lab': {
     title: 'Audio',
-    description: 'Audio tools are not implemented yet.'
+    description: 'Extract or transcode audio streams with safe FFmpeg options.'
   },
   'image-sequence': {
     title: 'Frames',
-    description: 'Frame export tools are not implemented yet.'
+    description: 'Export image sequences from video sources.'
   },
   'batch-pipeline': {
     title: 'Batch',
-    description: 'Batch processing is not implemented yet.'
+    description: 'Run the same convert settings across multiple files.'
   }
 };
 
@@ -304,6 +304,64 @@ function buildConvertCommandPreview(
   return parts.join(' ');
 }
 
+function buildAudioCommandPreview(
+  sourcePath: string,
+  outputPath: string,
+  audioCodec: string,
+  audioBitrate: string,
+  sampleRate: string,
+  channels: string
+) {
+  if (!sourcePath || !outputPath) {
+    return 'ffmpeg -y -i "input.mp4" -vn -c:a aac -b:a 192k -ar 48000 -ac 2 "output.m4a"';
+  }
+
+  const parts = ['ffmpeg', '-y', '-i', `"${sourcePath}"`, '-vn', '-c:a', audioCodec];
+
+  if (audioBitrate && audioCodec !== 'copy') {
+    parts.push('-b:a', audioBitrate);
+  }
+
+  if (sampleRate) {
+    parts.push('-ar', sampleRate);
+  }
+
+  if (channels) {
+    parts.push('-ac', channels);
+  }
+
+  parts.push(`"${outputPath}"`);
+  return parts.join(' ');
+}
+
+function buildFrameCommandPreview(
+  sourcePath: string,
+  outputDir: string,
+  imageFormat: string,
+  fps: string,
+  quality: string,
+  startNumber: number
+) {
+  if (!sourcePath || !outputDir) {
+    return 'ffmpeg -y -i "input.mp4" -vf fps=1 -start_number 1 "frames/frame_%06d.png"';
+  }
+
+  const parts = ['ffmpeg', '-y', '-i', `"${sourcePath}"`];
+
+  if (fps) {
+    parts.push('-vf', `fps=${fps}`);
+  }
+
+  parts.push('-start_number', String(startNumber));
+
+  if (quality && (imageFormat === 'jpg' || imageFormat === 'jpeg' || imageFormat === 'webp')) {
+    parts.push('-q:v', quality);
+  }
+
+  parts.push(`"${outputDir}\\frame_%06d.${imageFormat}"`);
+  return parts.join(' ');
+}
+
 function formatDateTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) {
@@ -369,6 +427,44 @@ function App() {
   const [isConvertBusy, setIsConvertBusy] = useState(false);
   const [convertLog, setConvertLog] = useState('');
   const [manualConvertPath, setManualConvertPath] = useState('');
+
+  const [audioSourcePath, setAudioSourcePath] = useState('');
+  const [audioOutputPath, setAudioOutputPath] = useState('');
+  const [audioProbe, setAudioProbe] = useState<ProbeResult | null>(null);
+  const [audioCodecSetting, setAudioCodecSetting] = useState('aac');
+  const [audioBitrateSetting, setAudioBitrateSetting] = useState('192k');
+  const [audioSampleRate, setAudioSampleRate] = useState('48000');
+  const [audioChannels, setAudioChannels] = useState('2');
+  const [audioStatus, setAudioStatus] = useState('Idle');
+  const [audioError, setAudioError] = useState('');
+  const [isAudioBusy, setIsAudioBusy] = useState(false);
+  const [audioLog, setAudioLog] = useState('');
+  const [manualAudioPath, setManualAudioPath] = useState('');
+
+  const [frameSourcePath, setFrameSourcePath] = useState('');
+  const [frameOutputDir, setFrameOutputDir] = useState('');
+  const [frameProbe, setFrameProbe] = useState<ProbeResult | null>(null);
+  const [frameImageFormat, setFrameImageFormat] = useState('png');
+  const [frameFps, setFrameFps] = useState('1');
+  const [frameQuality, setFrameQuality] = useState('2');
+  const [frameStartNumber, setFrameStartNumber] = useState('1');
+  const [frameStatus, setFrameStatus] = useState('Idle');
+  const [frameError, setFrameError] = useState('');
+  const [isFrameBusy, setIsFrameBusy] = useState(false);
+  const [frameLog, setFrameLog] = useState('');
+  const [manualFramePath, setManualFramePath] = useState('');
+
+  const [batchFiles, setBatchFiles] = useState<string[]>([]);
+  const [batchPreset, setBatchPreset] = useState('MP4 Safe Convert');
+  const [batchContainer, setBatchContainer] = useState('mp4');
+  const [batchVideoCodec, setBatchVideoCodec] = useState('mpeg4');
+  const [batchAudioCodec, setBatchAudioCodec] = useState('aac');
+  const [batchVideoBitrate, setBatchVideoBitrate] = useState('5M');
+  const [batchAudioBitrate, setBatchAudioBitrate] = useState('192k');
+  const [batchStatus, setBatchStatus] = useState('Idle');
+  const [batchError, setBatchError] = useState('');
+  const [isBatchBusy, setIsBatchBusy] = useState(false);
+  const [batchLog, setBatchLog] = useState('');
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [isDropTargetActive, setIsDropTargetActive] = useState(false);
   const [dropDebug, setDropDebug] = useState<DropDebugState>({
@@ -382,7 +478,7 @@ function App() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const timelineTrackRef = useRef<HTMLDivElement | null>(null);
-  const lastDropRef = useRef<{ path: string; at: number }>({ path: '', at: 0 });
+  const lastDropRef = useRef<{ signature: string; at: number }>({ signature: '', at: 0 });
   const domDragDepthRef = useRef(0);
   const activeToolRef = useRef<ToolId>('lossless-cut');
   const convertContainerRef = useRef('mp4');
@@ -420,6 +516,26 @@ function App() {
   );
   const activeModule = moduleDescriptions[activeTool];
   const ffmpegReady = Boolean(toolStatus?.ffmpeg.available && toolStatus?.ffprobe.available);
+  const audioDurationLabel = secondsToTimestamp(Number(audioProbe?.format?.duration || 0));
+  const audioSourceStream = audioProbe?.streams?.find((stream) => stream.codec_type === 'audio');
+  const audioCommandPreview = buildAudioCommandPreview(
+    audioSourcePath,
+    audioOutputPath,
+    audioCodecSetting,
+    audioBitrateSetting,
+    audioSampleRate,
+    audioChannels
+  );
+  const frameDurationLabel = secondsToTimestamp(Number(frameProbe?.format?.duration || 0));
+  const frameVideoStream = frameProbe?.streams?.find((stream) => stream.codec_type === 'video');
+  const frameCommandPreview = buildFrameCommandPreview(
+    frameSourcePath,
+    frameOutputDir,
+    frameImageFormat,
+    frameFps,
+    frameQuality,
+    Number(frameStartNumber || 1)
+  );
 
   useEffect(() => {
     let isDisposed = false;
@@ -482,6 +598,38 @@ function App() {
       setConvertOutputPath(replaceExtension(convertSourcePath, '_convert', selectedPreset.container));
     }
   }, [convertPreset, convertSourcePath]);
+
+  useEffect(() => {
+    const selectedPreset = convertPresets.find((entry) => entry.name === batchPreset);
+    if (!selectedPreset) {
+      return;
+    }
+
+    setBatchContainer(selectedPreset.container);
+    setBatchVideoCodec(selectedPreset.videoCodec);
+    setBatchAudioCodec(selectedPreset.audioCodec);
+    setBatchVideoBitrate(selectedPreset.videoBitrate);
+    setBatchAudioBitrate(selectedPreset.audioBitrate);
+  }, [batchPreset]);
+
+  useEffect(() => {
+    if (!audioSourcePath) {
+      return;
+    }
+
+    const audioExtension =
+      audioCodecSetting === 'copy'
+        ? extensionFromPath(audioSourcePath)
+        : audioCodecSetting === 'flac'
+          ? 'flac'
+          : audioCodecSetting === 'mp3'
+            ? 'mp3'
+            : audioCodecSetting === 'pcm_s16le'
+              ? 'wav'
+              : 'm4a';
+
+    setAudioOutputPath(replaceExtension(audioSourcePath, '_audio', audioExtension));
+  }, [audioCodecSetting, audioSourcePath]);
 
   useEffect(() => {
     activeToolRef.current = activeTool;
@@ -580,18 +728,20 @@ function App() {
       });
     }
 
-    function processDroppedPath(filePath: string) {
-      if (!filePath) {
+    function processDroppedPaths(paths: string[]) {
+      const uniqueDroppedPaths = uniquePaths(paths);
+      if (!uniqueDroppedPaths.length) {
         return;
       }
 
       const now = Date.now();
-      if (lastDropRef.current.path === filePath && now - lastDropRef.current.at < 1200) {
+      const signature = uniqueDroppedPaths.join('|');
+      if (lastDropRef.current.signature === signature && now - lastDropRef.current.at < 1200) {
         return;
       }
 
-      lastDropRef.current = { path: filePath, at: now };
-      handleDroppedPath(filePath);
+      lastDropRef.current = { signature, at: now };
+      handleDroppedPaths(uniqueDroppedPaths);
     }
 
     function handleNativeEvent(eventType: DropDebugState['lastEvent'], payload?: DragDropPayload, detail = '') {
@@ -623,10 +773,7 @@ function App() {
       setIsDropTargetActive(false);
       applyDropDebug('window', 'drop', paths, detail);
 
-      const [firstPath] = paths;
-      if (firstPath) {
-        processDroppedPath(firstPath);
-      }
+      processDroppedPaths(paths);
     }
 
     async function bindDragDropListener() {
@@ -747,11 +894,7 @@ function App() {
 
       const paths = extractDroppedPaths(event.dataTransfer);
       applyDropDebug('dom', 'drop', paths, describeDataTransfer(event.dataTransfer));
-
-      const [firstPath] = paths;
-      if (firstPath) {
-        processDroppedPath(firstPath);
-      }
+      processDroppedPaths(paths);
     }
 
     window.addEventListener('dragenter', handleDomDragEnter, true);
@@ -805,17 +948,32 @@ function App() {
     );
   }
 
-  function handleDroppedPath(filePath: string) {
-    if (!filePath) {
+  function addBatchFiles(paths: string[]) {
+    setBatchFiles((current) => uniquePaths([...current, ...paths]));
+  }
+
+  function handleDroppedPaths(paths: string[]) {
+    const [firstPath] = paths;
+    if (!firstPath) {
       return;
     }
 
-    if (activeToolRef.current === 'smart-convert') {
-      void loadConvertFile(filePath);
-      return;
+    switch (activeToolRef.current) {
+      case 'smart-convert':
+        void loadConvertFile(firstPath);
+        return;
+      case 'audio-lab':
+        void loadAudioFile(firstPath);
+        return;
+      case 'image-sequence':
+        void loadFrameFile(firstPath);
+        return;
+      case 'batch-pipeline':
+        addBatchFiles(paths);
+        return;
+      default:
+        void loadLosslessFile(firstPath);
     }
-
-    void loadLosslessFile(filePath);
   }
 
   function resetLosslessPreviewElement() {
@@ -914,6 +1072,54 @@ function App() {
       setConvertStatus('Error');
     } finally {
       setIsConvertBusy(false);
+    }
+  }
+
+  async function loadAudioFile(selectedPath: string) {
+    setAudioError('');
+    setIsAudioBusy(true);
+    setAudioStatus('Loading...');
+
+    try {
+      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
+      const preferredExtension = audioCodecSetting === 'copy' ? extensionFromPath(selectedPath) : audioCodecSetting === 'flac' ? 'flac' : audioCodecSetting === 'mp3' ? 'mp3' : audioCodecSetting === 'pcm_s16le' ? 'wav' : 'm4a';
+      setAudioSourcePath(selectedPath);
+      setAudioProbe(result);
+      setAudioOutputPath(replaceExtension(selectedPath, '_audio', preferredExtension));
+      setManualAudioPath(selectedPath);
+      setAudioStatus('Ready');
+      setAudioLog('');
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      setAudioError(message);
+      setAudioStatus('Error');
+    } finally {
+      setIsAudioBusy(false);
+    }
+  }
+
+  async function loadFrameFile(selectedPath: string) {
+    setFrameError('');
+    setIsFrameBusy(true);
+    setFrameStatus('Loading...');
+
+    try {
+      const result = await invoke<ProbeResult>('probe_media', { filePath: selectedPath });
+      const normalized = selectedPath.replaceAll('\\', '/');
+      const baseDirectory = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '';
+      const baseName = fileNameFromPath(selectedPath).replace(/\.[^.]+$/, '');
+      setFrameSourcePath(selectedPath);
+      setFrameProbe(result);
+      setFrameOutputDir(`${baseDirectory}${baseDirectory ? '/' : ''}${baseName}_frames`.replaceAll('/', '\\'));
+      setManualFramePath(selectedPath);
+      setFrameStatus('Ready');
+      setFrameLog('');
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'Analysis failed';
+      setFrameError(message);
+      setFrameStatus('Error');
+    } finally {
+      setIsFrameBusy(false);
     }
   }
 
@@ -1073,6 +1279,222 @@ function App() {
     }
   }
 
+  async function handleOpenAudioFile() {
+    try {
+      const selectedPath = await invoke<string | null>('open_file');
+      if (!selectedPath) {
+        return;
+      }
+
+      void loadAudioFile(selectedPath);
+    } catch {
+    }
+  }
+
+  async function handleLoadManualAudioPath() {
+    if (!manualAudioPath.trim()) {
+      setAudioError('Please enter a file path first.');
+      return;
+    }
+
+    void loadAudioFile(manualAudioPath.trim());
+  }
+
+  async function handlePickAudioOutput() {
+    if (!audioSourcePath) {
+      return;
+    }
+
+    const audioExtension =
+      audioCodecSetting === 'copy'
+        ? extensionFromPath(audioSourcePath)
+        : audioCodecSetting === 'flac'
+          ? 'flac'
+          : audioCodecSetting === 'mp3'
+            ? 'mp3'
+            : audioCodecSetting === 'pcm_s16le'
+              ? 'wav'
+              : 'm4a';
+
+    const selectedOutput = await invoke<string | null>('save_file', {
+      sourcePath: audioSourcePath,
+      extension: audioExtension,
+      suffix: '_audio'
+    });
+
+    if (selectedOutput) {
+      setAudioOutputPath(selectedOutput);
+    }
+  }
+
+  async function handleRunAudioExport() {
+    if (!ffmpegReady) {
+      setAudioError('ffmpeg and ffprobe must be available before running jobs.');
+      return;
+    }
+
+    if (!audioSourcePath || !audioOutputPath) {
+      setAudioError('Please choose a source file and an output path first.');
+      return;
+    }
+
+    setAudioError('');
+    setIsAudioBusy(true);
+    setAudioStatus('Running...');
+    const jobId = addJob('audio', audioSourcePath, audioOutputPath, `${audioCodecSetting} ${audioBitrateSetting || 'default'}`);
+
+    try {
+      const result = await invoke<{ command: string; log: string }>('run_audio_export', {
+        sourcePath: audioSourcePath,
+        outputPath: audioOutputPath,
+        audioCodec: audioCodecSetting,
+        audioBitrate: audioBitrateSetting,
+        sampleRate: audioSampleRate,
+        channels: audioChannels
+      });
+
+      setAudioStatus('Done');
+      setAudioLog(`${result.command}\n\n${result.log}`.trim());
+      updateJob(jobId, 'Done', `${audioCodecSetting} ${audioBitrateSetting || 'default'}`);
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      setAudioError(message);
+      setAudioStatus('Error');
+      updateJob(jobId, 'Error', message);
+    } finally {
+      setIsAudioBusy(false);
+    }
+  }
+
+  async function handleOpenFrameFile() {
+    try {
+      const selectedPath = await invoke<string | null>('open_file');
+      if (!selectedPath) {
+        return;
+      }
+
+      void loadFrameFile(selectedPath);
+    } catch {
+    }
+  }
+
+  async function handleLoadManualFramePath() {
+    if (!manualFramePath.trim()) {
+      setFrameError('Please enter a file path first.');
+      return;
+    }
+
+    void loadFrameFile(manualFramePath.trim());
+  }
+
+  async function handlePickFrameOutputDir() {
+    const selectedFolder = await invoke<string | null>('pick_folder');
+    if (selectedFolder) {
+      setFrameOutputDir(selectedFolder);
+    }
+  }
+
+  async function handleRunFrameExport() {
+    if (!ffmpegReady) {
+      setFrameError('ffmpeg and ffprobe must be available before running jobs.');
+      return;
+    }
+
+    if (!frameSourcePath || !frameOutputDir) {
+      setFrameError('Please choose a source file and an output folder first.');
+      return;
+    }
+
+    setFrameError('');
+    setIsFrameBusy(true);
+    setFrameStatus('Running...');
+    const jobId = addJob('frames', frameSourcePath, frameOutputDir, `${frameImageFormat} @ ${frameFps || 'native'} fps`);
+
+    try {
+      const result = await invoke<{ command: string; log: string }>('run_frame_export', {
+        sourcePath: frameSourcePath,
+        outputDir: frameOutputDir,
+        imageFormat: frameImageFormat,
+        fps: frameFps,
+        quality: frameQuality,
+        startNumber: Number(frameStartNumber || 1)
+      });
+
+      setFrameStatus('Done');
+      setFrameLog(`${result.command}\n\n${result.log}`.trim());
+      updateJob(jobId, 'Done', `${frameImageFormat} @ ${frameFps || 'native'} fps`);
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      setFrameError(message);
+      setFrameStatus('Error');
+      updateJob(jobId, 'Error', message);
+    } finally {
+      setIsFrameBusy(false);
+    }
+  }
+
+  async function handleAddBatchFiles() {
+    try {
+      const selectedPaths = await invoke<string[]>('open_files');
+      if (!selectedPaths.length) {
+        return;
+      }
+
+      addBatchFiles(selectedPaths);
+      setBatchError('');
+    } catch {
+    }
+  }
+
+  function handleClearBatchFiles() {
+    setBatchFiles([]);
+    setBatchLog('');
+    setBatchError('');
+    setBatchStatus('Idle');
+  }
+
+  async function handleRunBatchConvert() {
+    if (!ffmpegReady) {
+      setBatchError('ffmpeg and ffprobe must be available before running jobs.');
+      return;
+    }
+
+    if (!batchFiles.length) {
+      setBatchError('Please add at least one file to the batch list.');
+      return;
+    }
+
+    setBatchError('');
+    setIsBatchBusy(true);
+    setBatchStatus('Running...');
+    const firstFile = batchFiles[0];
+    const batchOutputPreview = replaceExtension(firstFile, '_batch_convert', batchContainer);
+    const jobId = addJob('batch', firstFile, batchOutputPreview, `${batchFiles.length} files`);
+
+    try {
+      const result = await invoke<{ commands: string[]; outputs: string[]; log: string }>('run_batch_convert', {
+        sourcePaths: batchFiles,
+        container: batchContainer,
+        videoCodec: batchVideoCodec,
+        audioCodec: batchAudioCodec,
+        videoBitrate: batchVideoBitrate,
+        audioBitrate: batchAudioBitrate
+      });
+
+      const combinedCommands = result.commands.join('\n\n');
+      setBatchStatus('Done');
+      setBatchLog(`${combinedCommands}\n\n${result.log}`.trim());
+      updateJob(jobId, 'Done', `${result.outputs.length} outputs`);
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : 'FFmpeg failed';
+      setBatchError(message);
+      setBatchStatus('Error');
+      updateJob(jobId, 'Error', message);
+    } finally {
+      setIsBatchBusy(false);
+    }
+  }
+
   function startDrag(mode: 'move' | 'start' | 'end', clientX: number) {
     if (durationSeconds <= 0) {
       return;
@@ -1183,6 +1605,14 @@ function App() {
   }
 
   function renderJobs() {
+    const jobLabel: Record<JobRecord['kind'], string> = {
+      cut: 'Lossless Cut',
+      convert: 'Convert',
+      audio: 'Audio',
+      frames: 'Frames',
+      batch: 'Batch'
+    };
+
     return (
       <section className="jobs-panel">
         <div className="section-header">
@@ -1194,7 +1624,7 @@ function App() {
             {jobs.map((job) => (
               <div key={job.id} className={`job-row status-${job.status.toLowerCase()}`}>
                 <div>
-                  <strong>{job.kind === 'cut' ? 'Lossless Cut' : 'Convert'}</strong>
+                  <strong>{jobLabel[job.kind]}</strong>
                   <span>{fileNameFromPath(job.source)}</span>
                 </div>
                 <div>
@@ -1605,6 +2035,312 @@ function App() {
     );
   }
 
+  function renderAudio() {
+    return (
+      <section className="panel panel-grid">
+        <div className="panel-block viewer-block">
+          <div className="section-header">
+            <h3>Source</h3>
+            <span>{audioSourcePath ? fileNameFromPath(audioSourcePath) : 'No file loaded'}</span>
+          </div>
+
+          <div className="viewer-placeholder compact-placeholder">
+            {audioSourcePath ? <span>File loaded</span> : <span>Load a media file to extract or convert audio.</span>}
+          </div>
+
+          <div className="manual-load-row">
+            <input
+              value={manualAudioPath}
+              onChange={(event) => setManualAudioPath(event.target.value)}
+              placeholder="Paste a local file path"
+            />
+            <button type="button" className="button" onClick={handleLoadManualAudioPath} disabled={isAudioBusy}>
+              Load Path
+            </button>
+          </div>
+
+          <div className="time-fields compact-fields">
+            <label>
+              <span>Duration</span>
+              <input value={audioDurationLabel} readOnly />
+            </label>
+            <label>
+              <span>Codec</span>
+              <input value={audioSourceStream?.codec_name || '-'} readOnly />
+            </label>
+            <label>
+              <span>Rate</span>
+              <input value={audioSourceStream?.sample_rate || '-'} readOnly />
+            </label>
+            <label>
+              <span>Channels</span>
+              <input value={audioSourceStream?.channels ? String(audioSourceStream.channels) : '-'} readOnly />
+            </label>
+          </div>
+
+          <div className="path-list">
+            <div>
+              <span>Source</span>
+              <strong>{audioSourcePath || '-'}</strong>
+            </div>
+            <div>
+              <span>Output</span>
+              <strong>{audioOutputPath || '-'}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel-block settings-block">
+          <div className="section-header">
+            <h3>Settings</h3>
+            <span>{audioStatus}</span>
+          </div>
+
+          <div className="form-grid">
+            <label>
+              <span>Codec</span>
+              <select value={audioCodecSetting} onChange={(event) => setAudioCodecSetting(event.target.value)}>
+                <option value="aac">aac</option>
+                <option value="mp3">mp3</option>
+                <option value="flac">flac</option>
+                <option value="pcm_s16le">pcm_s16le</option>
+                <option value="copy">copy</option>
+              </select>
+            </label>
+            <label>
+              <span>Bitrate</span>
+              <input
+                value={audioBitrateSetting}
+                onChange={(event) => setAudioBitrateSetting(event.target.value)}
+                placeholder="192k"
+                disabled={audioCodecSetting === 'copy'}
+              />
+            </label>
+            <label>
+              <span>Sample rate</span>
+              <input value={audioSampleRate} onChange={(event) => setAudioSampleRate(event.target.value)} placeholder="48000" />
+            </label>
+            <label>
+              <span>Channels</span>
+              <select value={audioChannels} onChange={(event) => setAudioChannels(event.target.value)}>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="">keep source</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="command-box">{audioCommandPreview}</div>
+
+          {audioError ? <div className="message error">{audioError}</div> : null}
+          {audioLog ? <pre className="log-box">{audioLog}</pre> : null}
+        </div>
+      </section>
+    );
+  }
+
+  function renderFrames() {
+    return (
+      <section className="panel panel-grid">
+        <div className="panel-block viewer-block">
+          <div className="section-header">
+            <h3>Source</h3>
+            <span>{frameSourcePath ? fileNameFromPath(frameSourcePath) : 'No file loaded'}</span>
+          </div>
+
+          <div className="viewer-placeholder compact-placeholder">
+            {frameSourcePath ? <span>Video ready for frame export</span> : <span>Load a video file to export frames.</span>}
+          </div>
+
+          <div className="manual-load-row">
+            <input
+              value={manualFramePath}
+              onChange={(event) => setManualFramePath(event.target.value)}
+              placeholder="Paste a local file path"
+            />
+            <button type="button" className="button" onClick={handleLoadManualFramePath} disabled={isFrameBusy}>
+              Load Path
+            </button>
+          </div>
+
+          <div className="time-fields compact-fields">
+            <label>
+              <span>Duration</span>
+              <input value={frameDurationLabel} readOnly />
+            </label>
+            <label>
+              <span>Video</span>
+              <input
+                value={
+                  frameVideoStream?.codec_name
+                    ? `${frameVideoStream.codec_name}${frameVideoStream.width ? ` ${frameVideoStream.width}x${frameVideoStream.height}` : ''}`
+                    : '-'
+                }
+                readOnly
+              />
+            </label>
+          </div>
+
+          <div className="path-list">
+            <div>
+              <span>Source</span>
+              <strong>{frameSourcePath || '-'}</strong>
+            </div>
+            <div>
+              <span>Output folder</span>
+              <strong>{frameOutputDir || '-'}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel-block settings-block">
+          <div className="section-header">
+            <h3>Settings</h3>
+            <span>{frameStatus}</span>
+          </div>
+
+          <div className="form-grid">
+            <label>
+              <span>Format</span>
+              <select value={frameImageFormat} onChange={(event) => setFrameImageFormat(event.target.value)}>
+                <option value="png">png</option>
+                <option value="jpg">jpg</option>
+                <option value="webp">webp</option>
+              </select>
+            </label>
+            <label>
+              <span>FPS</span>
+              <input value={frameFps} onChange={(event) => setFrameFps(event.target.value)} placeholder="1" />
+            </label>
+            <label>
+              <span>Quality</span>
+              <input
+                value={frameQuality}
+                onChange={(event) => setFrameQuality(event.target.value)}
+                placeholder="2"
+                disabled={frameImageFormat === 'png'}
+              />
+            </label>
+            <label>
+              <span>Start number</span>
+              <input value={frameStartNumber} onChange={(event) => setFrameStartNumber(event.target.value)} placeholder="1" />
+            </label>
+          </div>
+
+          <div className="command-box">{frameCommandPreview}</div>
+
+          {frameError ? <div className="message error">{frameError}</div> : null}
+          {frameLog ? <pre className="log-box">{frameLog}</pre> : null}
+        </div>
+      </section>
+    );
+  }
+
+  function renderBatch() {
+    return (
+      <section className="panel panel-grid">
+        <div className="panel-block viewer-block">
+          <div className="section-header">
+            <h3>Files</h3>
+            <span>{batchFiles.length} loaded</span>
+          </div>
+
+          {batchFiles.length ? (
+            <div className="file-list">
+              {batchFiles.map((filePath) => (
+                <div key={filePath} className="file-row">
+                  <strong>{fileNameFromPath(filePath)}</strong>
+                  <span>{filePath}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="viewer-placeholder compact-placeholder">
+              <span>Add multiple files to run one shared convert preset.</span>
+            </div>
+          )}
+
+          <div className="path-list">
+            <div>
+              <span>Outputs</span>
+              <strong>{batchFiles.length ? `${batchFiles.length} files will be written next to the sources` : '-'}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel-block settings-block">
+          <div className="section-header">
+            <h3>Settings</h3>
+            <span>{batchStatus}</span>
+          </div>
+
+          <div className="form-grid">
+            <label>
+              <span>Preset</span>
+              <select value={batchPreset} onChange={(event) => setBatchPreset(event.target.value)}>
+                {convertPresets.map((entry) => (
+                  <option key={entry.id} value={entry.name}>
+                    {entry.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Container</span>
+              <select value={batchContainer} onChange={(event) => setBatchContainer(event.target.value)}>
+                <option value="mp4">mp4</option>
+                <option value="mkv">mkv</option>
+                <option value="mov">mov</option>
+                <option value="flac">flac</option>
+                <option value="wav">wav</option>
+              </select>
+            </label>
+            <label>
+              <span>Video</span>
+              <select value={batchVideoCodec} onChange={(event) => setBatchVideoCodec(event.target.value)}>
+                <option value="mpeg4">mpeg4</option>
+                <option value="ffv1">ffv1</option>
+                <option value="copy">copy</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+            <label>
+              <span>Audio</span>
+              <select value={batchAudioCodec} onChange={(event) => setBatchAudioCodec(event.target.value)}>
+                <option value="aac">aac</option>
+                <option value="flac">flac</option>
+                <option value="pcm_s16le">pcm_s16le</option>
+                <option value="copy">copy</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+            <label>
+              <span>Video bitrate</span>
+              <input
+                value={batchVideoBitrate}
+                onChange={(event) => setBatchVideoBitrate(event.target.value)}
+                placeholder="5M"
+                disabled={batchVideoCodec === 'copy' || batchVideoCodec === 'none'}
+              />
+            </label>
+            <label>
+              <span>Audio bitrate</span>
+              <input
+                value={batchAudioBitrate}
+                onChange={(event) => setBatchAudioBitrate(event.target.value)}
+                placeholder="192k"
+                disabled={batchAudioCodec === 'copy' || batchAudioCodec === 'none'}
+              />
+            </label>
+          </div>
+
+          {batchError ? <div className="message error">{batchError}</div> : null}
+          {batchLog ? <pre className="log-box">{batchLog}</pre> : null}
+        </div>
+      </section>
+    );
+  }
+
   function renderPlaceholder() {
     return (
       <section className="panel placeholder-panel">
@@ -1625,7 +2361,17 @@ function App() {
         <div className="drop-overlay" aria-hidden="true">
           <div className="drop-overlay-card">
             <strong>Drop file to open</strong>
-            <span>{activeTool === 'smart-convert' ? 'Load into Convert' : 'Load into Lossless Cut'}</span>
+            <span>
+              {activeTool === 'smart-convert'
+                ? 'Load into Convert'
+                : activeTool === 'audio-lab'
+                  ? 'Load into Audio'
+                  : activeTool === 'image-sequence'
+                    ? 'Load into Frames'
+                    : activeTool === 'batch-pipeline'
+                      ? 'Add to Batch'
+                      : 'Load into Lossless Cut'}
+            </span>
           </div>
         </div>
       ) : null}
@@ -1694,12 +2440,59 @@ function App() {
                 </button>
               </>
             ) : null}
+
+            {activeTool === 'audio-lab' ? (
+              <>
+                <button type="button" className="button button-primary" onClick={handleOpenAudioFile} disabled={isAudioBusy}>
+                  Open
+                </button>
+                <button type="button" className="button" onClick={handlePickAudioOutput} disabled={!audioSourcePath || isAudioBusy}>
+                  Output
+                </button>
+                <button type="button" className="button" onClick={handleRunAudioExport} disabled={!audioSourcePath || isAudioBusy || !ffmpegReady}>
+                  Run
+                </button>
+              </>
+            ) : null}
+
+            {activeTool === 'image-sequence' ? (
+              <>
+                <button type="button" className="button button-primary" onClick={handleOpenFrameFile} disabled={isFrameBusy}>
+                  Open
+                </button>
+                <button type="button" className="button" onClick={handlePickFrameOutputDir} disabled={isFrameBusy}>
+                  Folder
+                </button>
+                <button type="button" className="button" onClick={handleRunFrameExport} disabled={!frameSourcePath || isFrameBusy || !ffmpegReady}>
+                  Run
+                </button>
+              </>
+            ) : null}
+
+            {activeTool === 'batch-pipeline' ? (
+              <>
+                <button type="button" className="button button-primary" onClick={handleAddBatchFiles} disabled={isBatchBusy}>
+                  Add Files
+                </button>
+                <button type="button" className="button" onClick={handleClearBatchFiles} disabled={!batchFiles.length || isBatchBusy}>
+                  Clear
+                </button>
+                <button type="button" className="button" onClick={handleRunBatchConvert} disabled={!batchFiles.length || isBatchBusy || !ffmpegReady}>
+                  Run
+                </button>
+              </>
+            ) : null}
           </div>
         </header>
 
         {activeTool === 'lossless-cut' ? renderLosslessCut() : null}
         {activeTool === 'smart-convert' ? renderConvert() : null}
-        {activeTool !== 'lossless-cut' && activeTool !== 'smart-convert' ? renderPlaceholder() : null}
+        {activeTool === 'audio-lab' ? renderAudio() : null}
+        {activeTool === 'image-sequence' ? renderFrames() : null}
+        {activeTool === 'batch-pipeline' ? renderBatch() : null}
+        {activeTool !== 'lossless-cut' && activeTool !== 'smart-convert' && activeTool !== 'audio-lab' && activeTool !== 'image-sequence' && activeTool !== 'batch-pipeline'
+          ? renderPlaceholder()
+          : null}
 
         {renderDropDebug()}
         {renderJobs()}

@@ -54,6 +54,47 @@ struct ConvertPayload {
     audio_bitrate: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchCommandResult {
+    commands: Vec<String>,
+    outputs: Vec<String>,
+    log: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioExportPayload {
+    source_path: String,
+    output_path: String,
+    audio_codec: String,
+    audio_bitrate: String,
+    sample_rate: String,
+    channels: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameExportPayload {
+    source_path: String,
+    output_dir: String,
+    image_format: String,
+    fps: String,
+    quality: String,
+    start_number: u32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchConvertPayload {
+    source_paths: Vec<String>,
+    container: String,
+    video_codec: String,
+    audio_codec: String,
+    video_bitrate: String,
+    audio_bitrate: String,
+}
+
 fn format_output_path(input_path: &str, extension: &str, suffix: Option<&str>) -> Option<PathBuf> {
     let path = Path::new(input_path);
     let stem = path.file_stem()?.to_string_lossy();
@@ -68,6 +109,35 @@ fn shell_quote(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn build_convert_args(payload: &ConvertPayload) -> Vec<String> {
+    let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path.clone()];
+
+    if payload.video_codec == "none" {
+        args.push("-vn".to_string());
+    } else {
+        args.push("-c:v".to_string());
+        args.push(payload.video_codec.clone());
+        if !payload.video_bitrate.is_empty() && payload.video_codec != "copy" {
+            args.push("-b:v".to_string());
+            args.push(payload.video_bitrate.clone());
+        }
+    }
+
+    if payload.audio_codec == "none" {
+        args.push("-an".to_string());
+    } else {
+        args.push("-c:a".to_string());
+        args.push(payload.audio_codec.clone());
+        if !payload.audio_bitrate.is_empty() && payload.audio_codec != "copy" {
+            args.push("-b:a".to_string());
+            args.push(payload.audio_bitrate.clone());
+        }
+    }
+
+    args.push(payload.output_path.clone());
+    args
 }
 
 fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> {
@@ -142,6 +212,27 @@ fn open_file() -> Option<String> {
             &["mp4", "mkv", "mov", "avi", "mp3", "wav", "m4a", "flac", "webm"],
         )
         .pick_file()
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn open_files() -> Vec<String> {
+    FileDialog::new()
+        .add_filter(
+            "Media files",
+            &["mp4", "mkv", "mov", "avi", "mp3", "wav", "m4a", "flac", "webm"],
+        )
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+}
+
+#[tauri::command]
+fn pick_folder() -> Option<String> {
+    FileDialog::new()
+        .pick_folder()
         .map(|path| path.to_string_lossy().to_string())
 }
 
@@ -245,33 +336,116 @@ async fn run_lossless_cut(payload: LosslessCutPayload) -> Result<CommandResult, 
 
 #[tauri::command]
 async fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
-    async_runtime::spawn_blocking(move || {
-        let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path];
+    async_runtime::spawn_blocking(move || run_command("ffmpeg", &build_convert_args(&payload)))
+    .await
+    .map_err(|error| error.to_string())?
+}
 
-        if payload.video_codec == "none" {
-            args.push("-vn".to_string());
-        } else {
-            args.push("-c:v".to_string());
-            args.push(payload.video_codec.clone());
-            if !payload.video_bitrate.is_empty() && payload.video_codec != "copy" {
-                args.push("-b:v".to_string());
-                args.push(payload.video_bitrate);
-            }
+#[tauri::command]
+async fn run_audio_export(payload: AudioExportPayload) -> Result<CommandResult, String> {
+    async_runtime::spawn_blocking(move || {
+        let mut args = vec![
+            "-y".to_string(),
+            "-i".to_string(),
+            payload.source_path,
+            "-vn".to_string(),
+            "-c:a".to_string(),
+            payload.audio_codec.clone(),
+        ];
+
+        if !payload.audio_bitrate.is_empty() && payload.audio_codec != "copy" {
+            args.push("-b:a".to_string());
+            args.push(payload.audio_bitrate);
         }
 
-        if payload.audio_codec == "none" {
-            args.push("-an".to_string());
-        } else {
-            args.push("-c:a".to_string());
-            args.push(payload.audio_codec.clone());
-            if !payload.audio_bitrate.is_empty() && payload.audio_codec != "copy" {
-                args.push("-b:a".to_string());
-                args.push(payload.audio_bitrate);
-            }
+        if !payload.sample_rate.is_empty() {
+            args.push("-ar".to_string());
+            args.push(payload.sample_rate);
+        }
+
+        if !payload.channels.is_empty() {
+            args.push("-ac".to_string());
+            args.push(payload.channels);
         }
 
         args.push(payload.output_path);
         run_command("ffmpeg", &args)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn run_frame_export(payload: FrameExportPayload) -> Result<CommandResult, String> {
+    async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&payload.output_dir).map_err(|error| error.to_string())?;
+
+        let output_pattern = Path::new(&payload.output_dir)
+            .join(format!("frame_%06d.{}", payload.image_format))
+            .to_string_lossy()
+            .to_string();
+
+        let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path];
+
+        if !payload.fps.is_empty() {
+            args.push("-vf".to_string());
+            args.push(format!("fps={}", payload.fps));
+        }
+
+        args.push("-start_number".to_string());
+        args.push(payload.start_number.to_string());
+
+        if !payload.quality.is_empty() && matches!(payload.image_format.as_str(), "jpg" | "jpeg" | "webp") {
+            args.push("-q:v".to_string());
+            args.push(payload.quality);
+        }
+
+        args.push(output_pattern);
+        run_command("ffmpeg", &args)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn run_batch_convert(payload: BatchConvertPayload) -> Result<BatchCommandResult, String> {
+    async_runtime::spawn_blocking(move || {
+        if payload.source_paths.is_empty() {
+            return Err("No files selected".to_string());
+        }
+
+        let mut commands = Vec::new();
+        let mut outputs = Vec::new();
+        let mut logs = Vec::new();
+
+        for source_path in payload.source_paths {
+            let output_path = format_output_path(&source_path, &payload.container, Some("_batch_convert"))
+                .ok_or_else(|| format!("Could not determine output path for {}", source_path))?
+                .to_string_lossy()
+                .to_string();
+
+            let result = run_command(
+                "ffmpeg",
+                &build_convert_args(&ConvertPayload {
+                    source_path: source_path.clone(),
+                    output_path: output_path.clone(),
+                    video_codec: payload.video_codec.clone(),
+                    audio_codec: payload.audio_codec.clone(),
+                    video_bitrate: payload.video_bitrate.clone(),
+                    audio_bitrate: payload.audio_bitrate.clone(),
+                }),
+            )?;
+
+            commands.push(result.command);
+            outputs.push(output_path.clone());
+            logs.push(format!("{}\n{}", output_path, result.log));
+        }
+
+        Ok(BatchCommandResult {
+            commands,
+            outputs,
+            log: logs.join("\n\n"),
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -283,11 +457,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_tool_status,
             open_file,
+            open_files,
+            pick_folder,
             save_file,
             probe_media,
             probe_keyframes,
             run_lossless_cut,
-            run_convert
+            run_convert,
+            run_audio_export,
+            run_frame_export,
+            run_batch_convert
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

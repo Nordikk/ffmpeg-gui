@@ -490,6 +490,28 @@ select {
   background: rgba(255, 123, 123, 0.1);
 }
 
+.file-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  padding: 2px;
+  overflow: auto;
+}
+
+.file-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #101419;
+}
+
+.file-row span {
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
 .job-list {
   display: grid;
   gap: 10px;
