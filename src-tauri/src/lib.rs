@@ -116,10 +116,21 @@ fn probe_binary(binary: &str) -> BinaryStatus {
 }
 
 #[tauri::command]
-fn check_tool_status() -> ToolStatus {
+async fn check_tool_status() -> ToolStatus {
+    let ffmpeg_task = async_runtime::spawn_blocking(|| probe_binary("ffmpeg"));
+    let ffprobe_task = async_runtime::spawn_blocking(|| probe_binary("ffprobe"));
+
     ToolStatus {
-        ffmpeg: probe_binary("ffmpeg"),
-        ffprobe: probe_binary("ffprobe"),
+        ffmpeg: ffmpeg_task.await.unwrap_or_else(|error| BinaryStatus {
+            available: false,
+            version: String::new(),
+            error: error.to_string(),
+        }),
+        ffprobe: ffprobe_task.await.unwrap_or_else(|error| BinaryStatus {
+            available: false,
+            version: String::new(),
+            error: error.to_string(),
+        }),
     }
 }
 

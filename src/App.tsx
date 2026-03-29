@@ -1,7 +1,4 @@
-import { TauriEvent, listen as listenEvent } from '@tauri-apps/api/event';
 import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
@@ -54,7 +51,7 @@ type DropDebugState = {
   pathCount: number;
   firstPath: string;
   timestamp: string;
-  source: 'none' | 'window' | 'webview' | 'webviewWindow' | 'global' | 'dom';
+  source: 'none' | 'window' | 'dom';
   detail: string;
 };
 
@@ -339,6 +336,7 @@ function App() {
   const buildId = __BUILD_ID__;
   const [activeTool, setActiveTool] = useState<ToolId>('lossless-cut');
   const [toolStatus, setToolStatus] = useState<ToolStatus | null>(null);
+  const [isCheckingToolStatus, setIsCheckingToolStatus] = useState(true);
 
   const [sourcePath, setSourcePath] = useState('');
   const [outputPath, setOutputPath] = useState('');
@@ -389,6 +387,7 @@ function App() {
   const activeToolRef = useRef<ToolId>('lossless-cut');
   const convertContainerRef = useRef('mp4');
   const losslessLoadRequestRef = useRef(0);
+  const nativeDropEnabledRef = useRef(false);
   const dragRef = useRef<{ active: false } | { active: true; mode: 'move' | 'start' | 'end'; startX: number; startStart: number; startEnd: number }>({
     active: false
   });
@@ -423,9 +422,36 @@ function App() {
   const ffmpegReady = Boolean(toolStatus?.ffmpeg.available && toolStatus?.ffprobe.available);
 
   useEffect(() => {
-    void invoke<ToolStatus>('check_tool_status').then(setToolStatus).catch(() => {
-      setToolStatus(null);
-    });
+    let isDisposed = false;
+    const timer = window.setTimeout(() => {
+      void invoke<ToolStatus>('check_tool_status')
+        .then((nextStatus) => {
+          if (isDisposed) {
+            return;
+          }
+
+          setToolStatus(nextStatus);
+        })
+        .catch(() => {
+          if (isDisposed) {
+            return;
+          }
+
+          setToolStatus(null);
+        })
+        .finally(() => {
+          if (isDisposed) {
+            return;
+          }
+
+          setIsCheckingToolStatus(false);
+        });
+    }, 120);
+
+    return () => {
+      isDisposed = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -568,17 +594,12 @@ function App() {
       handleDroppedPath(filePath);
     }
 
-    function handleNativeEvent(
-      source: Exclude<DropDebugState['source'], 'none' | 'dom'>,
-      eventType: DropDebugState['lastEvent'],
-      payload?: DragDropPayload,
-      detail = ''
-    ) {
+    function handleNativeEvent(eventType: DropDebugState['lastEvent'], payload?: DragDropPayload, detail = '') {
       const paths = payload?.paths ?? [];
 
       if (eventType === 'enter') {
         setIsDropTargetActive(true);
-        applyDropDebug(source, 'enter', paths, detail);
+        applyDropDebug('window', 'enter', paths, detail);
         return;
       }
 
@@ -587,7 +608,7 @@ function App() {
           ...current,
           lastEvent: 'over',
           timestamp: new Date().toISOString(),
-          source,
+          source: 'window',
           detail
         }));
         return;
@@ -595,12 +616,12 @@ function App() {
 
       if (eventType === 'leave') {
         setIsDropTargetActive(false);
-        applyDropDebug(source, 'leave', [], detail);
+        applyDropDebug('window', 'leave', [], detail);
         return;
       }
 
       setIsDropTargetActive(false);
-      applyDropDebug(source, 'drop', paths, detail);
+      applyDropDebug('window', 'drop', paths, detail);
 
       const [firstPath] = paths;
       if (firstPath) {
@@ -610,49 +631,14 @@ function App() {
 
     async function bindDragDropListener() {
       const currentWindow = getCurrentWindow();
-      const currentWebview = getCurrentWebview();
-      const currentWebviewWindow = getCurrentWebviewWindow();
 
       const bindings = await Promise.allSettled([
         currentWindow.onDragDropEvent((event) => {
-          handleNativeEvent(
-            'window',
-            event.payload.type,
-            event.payload.type === 'leave' ? undefined : event.payload,
-            'Tauri Window drag/drop event'
-          );
-        }),
-        currentWebview.onDragDropEvent((event) => {
-          handleNativeEvent(
-            'webview',
-            event.payload.type,
-            event.payload.type === 'leave' ? undefined : event.payload,
-            'Tauri Webview drag/drop event'
-          );
-        }),
-        currentWebviewWindow.onDragDropEvent((event) => {
-          handleNativeEvent(
-            'webviewWindow',
-            event.payload.type,
-            event.payload.type === 'leave' ? undefined : event.payload,
-            'Tauri WebviewWindow drag/drop event'
-          );
-        }),
-        listenEvent<DragDropPayload>(TauriEvent.DRAG_ENTER, (event) => {
-          handleNativeEvent('global', 'enter', event.payload, 'Global Tauri drag-enter event');
-        }),
-        listenEvent<DragDropPayload>(TauriEvent.DRAG_OVER, (event) => {
-          handleNativeEvent('global', 'over', event.payload, 'Global Tauri drag-over event');
-        }),
-        listenEvent<DragDropPayload>(TauriEvent.DRAG_DROP, (event) => {
-          handleNativeEvent('global', 'drop', event.payload, 'Global Tauri drag-drop event');
-        }),
-        listenEvent(TauriEvent.DRAG_LEAVE, () => {
-          handleNativeEvent('global', 'leave', undefined, 'Global Tauri drag-leave event');
+          handleNativeEvent(event.payload.type, event.payload.type === 'leave' ? undefined : event.payload, 'Tauri Window drag/drop event');
         })
       ]);
 
-      const bindingNames = ['window', 'webview', 'webviewWindow', 'global-enter', 'global-over', 'global-drop', 'global-leave'];
+      const bindingNames = ['window'];
       const successBindings: string[] = [];
       const failedBindings: string[] = [];
 
@@ -665,6 +651,8 @@ function App() {
 
         failedBindings.push(`${bindingNames[index]}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
       });
+
+      nativeDropEnabledRef.current = successBindings.length > 0;
 
       setDropDebug((current) => ({
         ...current,
@@ -692,6 +680,11 @@ function App() {
       }
 
       event.preventDefault();
+
+      if (nativeDropEnabledRef.current) {
+        return;
+      }
+
       domDragDepthRef.current += 1;
       setIsDropTargetActive(true);
       applyDropDebug('dom', 'enter', [], describeDataTransfer(event.dataTransfer));
@@ -705,6 +698,10 @@ function App() {
       event.preventDefault();
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = 'copy';
+      }
+
+      if (nativeDropEnabledRef.current) {
+        return;
       }
 
       setDropDebug((current) => ({
@@ -722,6 +719,11 @@ function App() {
       }
 
       event.preventDefault();
+
+      if (nativeDropEnabledRef.current) {
+        return;
+      }
+
       domDragDepthRef.current = Math.max(0, domDragDepthRef.current - 1);
 
       if (domDragDepthRef.current === 0) {
@@ -738,6 +740,10 @@ function App() {
       event.preventDefault();
       domDragDepthRef.current = 0;
       setIsDropTargetActive(false);
+
+      if (nativeDropEnabledRef.current) {
+        return;
+      }
 
       const paths = extractDroppedPaths(event.dataTransfer);
       applyDropDebug('dom', 'drop', paths, describeDataTransfer(event.dataTransfer));
@@ -1139,6 +1145,10 @@ function App() {
   }
 
   function renderToolStatus() {
+    if (isCheckingToolStatus) {
+      return null;
+    }
+
     const ffmpegStatus = toolStatus?.ffmpeg;
     const ffprobeStatus = toolStatus?.ffprobe;
     const ready = Boolean(ffmpegStatus?.available && ffprobeStatus?.available);
