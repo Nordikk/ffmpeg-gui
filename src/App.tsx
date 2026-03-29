@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useEffect, useRef, useState } from 'react';
 import { convertPresets, presets, tools } from './data/appData';
@@ -41,8 +42,19 @@ type JobRecord = {
   kind: 'cut' | 'convert' | 'audio' | 'frames' | 'batch';
   source: string;
   output: string;
-  status: 'Running' | 'Done' | 'Error';
+  status: 'Running' | 'Done' | 'Error' | 'Cancelled';
   startedAt: string;
+  detail: string;
+  progress: number;
+};
+
+type JobProgressEvent = {
+  jobId: string;
+  kind: JobRecord['kind'];
+  state: 'running' | 'done' | 'cancelled';
+  progress: number;
+  currentTime?: number;
+  totalTime?: number;
   detail: string;
 };
 
@@ -440,6 +452,18 @@ function errorMessageFromUnknown(caughtError: unknown, fallback: string) {
   }
 
   return fallback;
+}
+
+function isCancellationMessage(message: string) {
+  return /cancelled/i.test(message);
+}
+
+function progressPercent(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.round(clamp(value, 0, 1) * 100);
 }
 
 function nearestKeyframe(value: number, keyframes: number[]) {
@@ -989,6 +1013,47 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void listen<JobProgressEvent>('job-progress', (event) => {
+      const { jobId, progress, detail, state } = event.payload;
+
+      setJobs((current) =>
+        current.map((job) => {
+          if (job.id !== jobId) {
+            return job;
+          }
+
+          const nextStatus =
+            state === 'done'
+              ? 'Done'
+              : state === 'cancelled'
+                ? 'Cancelled'
+                : job.status;
+
+          return {
+            ...job,
+            status: nextStatus,
+            detail: detail || job.detail,
+            progress: clamp(progress, 0, 1)
+          };
+        })
+      );
+    })
+      .then((dispose) => {
+        unlisten = dispose;
+      })
+      .catch(() => {
+      });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
   function addJob(kind: JobRecord['kind'], source: string, output: string, detail: string) {
     const id = `${kind}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const nextJob: JobRecord = {
@@ -998,25 +1063,37 @@ function App() {
       output,
       status: 'Running',
       startedAt: new Date().toISOString(),
-      detail
+      detail,
+      progress: 0
     };
 
     setJobs((current) => [nextJob, ...current].slice(0, 12));
     return id;
   }
 
-  function updateJob(id: string, statusValue: JobRecord['status'], detail: string) {
+  function updateJob(id: string, statusValue: JobRecord['status'], detail: string, progress?: number) {
     setJobs((current) =>
       current.map((job) =>
         job.id === id
           ? {
               ...job,
               status: statusValue,
-              detail
+              detail,
+              progress:
+                progress ??
+                (statusValue === 'Done'
+                  ? 1
+                  : statusValue === 'Running'
+                    ? job.progress
+                    : job.progress)
             }
           : job
       )
     );
+  }
+
+  function findRunningJob(kind: JobRecord['kind']) {
+    return jobs.find((job) => job.kind === kind && job.status === 'Running');
   }
 
   function addBatchFiles(paths: string[]) {
@@ -1253,6 +1330,8 @@ function App() {
     try {
       const result = await invoke<{ command: string; log: string }>('run_lossless_cut', {
         payload: {
+          jobId,
+          durationSeconds: selectionSpan,
           sourcePath,
           outputPath,
           start,
@@ -1267,9 +1346,13 @@ function App() {
       updateJob(jobId, 'Done', `${start} -> ${end}`);
     } catch (caughtError) {
       const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
-      setError(message);
-      setStatus('Error');
-      updateJob(jobId, 'Error', message);
+      const cancelled = isCancellationMessage(message);
+      setError(cancelled ? '' : message);
+      if (cancelled) {
+        setLastLog('Job cancelled.');
+      }
+      setStatus(cancelled ? 'Cancelled' : 'Error');
+      updateJob(jobId, cancelled ? 'Cancelled' : 'Error', message);
     } finally {
       setIsBusy(false);
     }
@@ -1331,6 +1414,8 @@ function App() {
     try {
       const result = await invoke<{ command: string; log: string }>('run_convert', {
         payload: {
+          jobId,
+          durationSeconds: convertDurationSeconds,
           sourcePath: convertSourcePath,
           outputPath: convertOutputPath,
           videoCodec: convertVideoCodec,
@@ -1345,9 +1430,13 @@ function App() {
       updateJob(jobId, 'Done', `${convertContainer} ${convertVideoCodec}/${convertAudioCodec}`);
     } catch (caughtError) {
       const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
-      setConvertError(message);
-      setConvertStatus('Error');
-      updateJob(jobId, 'Error', message);
+      const cancelled = isCancellationMessage(message);
+      setConvertError(cancelled ? '' : message);
+      if (cancelled) {
+        setConvertLog('Job cancelled.');
+      }
+      setConvertStatus(cancelled ? 'Cancelled' : 'Error');
+      updateJob(jobId, cancelled ? 'Cancelled' : 'Error', message);
     } finally {
       setIsConvertBusy(false);
     }
@@ -1420,6 +1509,8 @@ function App() {
     try {
       const result = await invoke<{ command: string; log: string }>('run_audio_export', {
         payload: {
+          jobId,
+          durationSeconds: Number(audioProbe?.format?.duration || 0),
           sourcePath: audioSourcePath,
           outputPath: audioOutputPath,
           audioCodec: audioCodecSetting,
@@ -1434,9 +1525,13 @@ function App() {
       updateJob(jobId, 'Done', `${audioCodecSetting} ${audioBitrateSetting || 'default'}`);
     } catch (caughtError) {
       const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
-      setAudioError(message);
-      setAudioStatus('Error');
-      updateJob(jobId, 'Error', message);
+      const cancelled = isCancellationMessage(message);
+      setAudioError(cancelled ? '' : message);
+      if (cancelled) {
+        setAudioLog('Job cancelled.');
+      }
+      setAudioStatus(cancelled ? 'Cancelled' : 'Error');
+      updateJob(jobId, cancelled ? 'Cancelled' : 'Error', message);
     } finally {
       setIsAudioBusy(false);
     }
@@ -1489,6 +1584,8 @@ function App() {
     try {
       const result = await invoke<{ command: string; log: string }>('run_frame_export', {
         payload: {
+          jobId,
+          durationSeconds: Number(frameProbe?.format?.duration || 0),
           sourcePath: frameSourcePath,
           outputDir: frameOutputDir,
           imageFormat: frameImageFormat,
@@ -1503,9 +1600,13 @@ function App() {
       updateJob(jobId, 'Done', `${frameImageFormat} @ ${frameFps || 'native'} fps`);
     } catch (caughtError) {
       const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
-      setFrameError(message);
-      setFrameStatus('Error');
-      updateJob(jobId, 'Error', message);
+      const cancelled = isCancellationMessage(message);
+      setFrameError(cancelled ? '' : message);
+      if (cancelled) {
+        setFrameLog('Job cancelled.');
+      }
+      setFrameStatus(cancelled ? 'Cancelled' : 'Error');
+      updateJob(jobId, cancelled ? 'Cancelled' : 'Error', message);
     } finally {
       setIsFrameBusy(false);
     }
@@ -1552,6 +1653,7 @@ function App() {
     try {
       const result = await invoke<{ commands: string[]; outputs: string[]; log: string }>('run_batch_convert', {
         payload: {
+          jobId,
           sourcePaths: batchFiles,
           container: batchContainer,
           videoCodec: batchVideoCodec,
@@ -1567,9 +1669,13 @@ function App() {
       updateJob(jobId, 'Done', `${result.outputs.length} outputs`);
     } catch (caughtError) {
       const message = errorMessageFromUnknown(caughtError, 'FFmpeg failed');
-      setBatchError(message);
-      setBatchStatus('Error');
-      updateJob(jobId, 'Error', message);
+      const cancelled = isCancellationMessage(message);
+      setBatchError(cancelled ? '' : message);
+      if (cancelled) {
+        setBatchLog('Job cancelled.');
+      }
+      setBatchStatus(cancelled ? 'Cancelled' : 'Error');
+      updateJob(jobId, cancelled ? 'Cancelled' : 'Error', message);
     } finally {
       setIsBatchBusy(false);
     }
@@ -1646,6 +1752,45 @@ function App() {
     setEnd(secondsToTimestamp(clamp(nextEnd, selectionStartSeconds + 0.1, durationSeconds)));
   }
 
+  async function handleCancelJob(
+    job: JobRecord | undefined,
+    setModuleStatus: (value: string) => void,
+    setModuleError: (value: string) => void
+  ) {
+    if (!job) {
+      return;
+    }
+
+    setModuleStatus('Stopping...');
+    setModuleError('');
+
+    try {
+      await invoke('cancel_job', { payload: { jobId: job.id } });
+    } catch (caughtError) {
+      const message = errorMessageFromUnknown(caughtError, 'Could not stop the running job.');
+      setModuleStatus(job.status);
+      setModuleError(message);
+    }
+  }
+
+  function renderProgress(job: JobRecord | undefined) {
+    if (!job) {
+      return null;
+    }
+
+    return (
+      <div className="progress-card">
+        <div className="progress-meta">
+          <strong>{progressPercent(job.progress)}%</strong>
+          <span>{job.detail}</span>
+        </div>
+        <div className="progress-track" aria-hidden="true">
+          <div className="progress-fill" style={{ width: `${Math.max(progressPercent(job.progress), job.status === 'Running' ? 4 : 0)}%` }} />
+        </div>
+      </div>
+    );
+  }
+
   function renderToolStatus() {
     if (isCheckingToolStatus) {
       return null;
@@ -1710,6 +1855,7 @@ function App() {
                 <div>
                   <strong>{job.status}</strong>
                   <span>{job.detail}</span>
+                  {job.status === 'Running' ? renderProgress(job) : null}
                 </div>
                 <div>
                   <strong>{fileNameFromPath(job.output)}</strong>
@@ -1725,48 +1871,9 @@ function App() {
     );
   }
 
-  function renderDropDebug() {
-    return (
-      <section className="debug-panel">
-          <div className="section-header">
-            <h3>Drop Debug</h3>
-            <span>{dropDebug.lastEvent}</span>
-          </div>
-        <div className="debug-grid">
-          <div>
-            <span>Last event</span>
-            <strong>{dropDebug.lastEvent}</strong>
-          </div>
-          <div>
-            <span>Source</span>
-            <strong>{dropDebug.source}</strong>
-          </div>
-          <div>
-            <span>Paths</span>
-            <strong>{dropDebug.pathCount}</strong>
-          </div>
-          <div>
-            <span>First path</span>
-            <strong>{dropDebug.firstPath || '-'}</strong>
-          </div>
-          <div>
-            <span>Timestamp</span>
-            <strong>{dropDebug.timestamp ? formatDateTime(dropDebug.timestamp) : '-'}</strong>
-          </div>
-          <div>
-            <span>Detail</span>
-            <strong>{dropDebug.detail || '-'}</strong>
-          </div>
-          <div>
-            <span>Build</span>
-            <strong>{buildId}</strong>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
   function renderLosslessCut() {
+    const runningJob = findRunningJob('cut');
+
     return (
       <>
         <section className="panel panel-grid">
@@ -1948,6 +2055,7 @@ function App() {
             </div>
 
             <div className="command-box">{commandPreview}</div>
+            {renderProgress(runningJob)}
 
             {error ? <div className="message error">{error}</div> : null}
             {lastLog ? <pre className="log-box">{lastLog}</pre> : null}
@@ -1958,6 +2066,8 @@ function App() {
   }
 
   function renderConvert() {
+    const runningJob = findRunningJob('convert');
+
     return (
       <>
         <section className="panel panel-grid">
@@ -2106,6 +2216,7 @@ function App() {
             </div>
 
             <div className="command-box">{convertCommandPreview}</div>
+            {renderProgress(runningJob)}
 
             {convertError ? <div className="message error">{convertError}</div> : null}
             {convertLog ? <pre className="log-box">{convertLog}</pre> : null}
@@ -2116,6 +2227,8 @@ function App() {
   }
 
   function renderAudio() {
+    const runningJob = findRunningJob('audio');
+
     return (
       <section className="panel panel-grid">
         <div className="panel-block viewer-block">
@@ -2211,6 +2324,7 @@ function App() {
           </div>
 
           <div className="command-box">{audioCommandPreview}</div>
+          {renderProgress(runningJob)}
 
           {audioError ? <div className="message error">{audioError}</div> : null}
           {audioLog ? <pre className="log-box">{audioLog}</pre> : null}
@@ -2220,6 +2334,8 @@ function App() {
   }
 
   function renderFrames() {
+    const runningJob = findRunningJob('frames');
+
     return (
       <section className="panel panel-grid">
         <div className="panel-block viewer-block">
@@ -2308,6 +2424,7 @@ function App() {
           </div>
 
           <div className="command-box">{frameCommandPreview}</div>
+          {renderProgress(runningJob)}
 
           {frameError ? <div className="message error">{frameError}</div> : null}
           {frameLog ? <pre className="log-box">{frameLog}</pre> : null}
@@ -2317,6 +2434,8 @@ function App() {
   }
 
   function renderBatch() {
+    const runningJob = findRunningJob('batch');
+
     return (
       <section className="panel panel-grid">
         <div className="panel-block viewer-block">
@@ -2414,6 +2533,7 @@ function App() {
             </label>
           </div>
 
+          {renderProgress(runningJob)}
           {batchError ? <div className="message error">{batchError}</div> : null}
           {batchLog ? <pre className="log-box">{batchLog}</pre> : null}
         </div>
@@ -2499,6 +2619,14 @@ function App() {
                 <button type="button" className="button" onClick={handleRunLosslessCut} disabled={!sourcePath || isBusy || !ffmpegReady}>
                   Run
                 </button>
+                <button
+                  type="button"
+                  className="button button-danger"
+                  onClick={() => void handleCancelJob(findRunningJob('cut'), setStatus, setError)}
+                  disabled={!findRunningJob('cut')}
+                >
+                  Stop
+                </button>
               </>
             ) : null}
 
@@ -2518,6 +2646,14 @@ function App() {
                 <button type="button" className="button" onClick={handleRunConvert} disabled={!convertSourcePath || isConvertBusy || !ffmpegReady}>
                   Run
                 </button>
+                <button
+                  type="button"
+                  className="button button-danger"
+                  onClick={() => void handleCancelJob(findRunningJob('convert'), setConvertStatus, setConvertError)}
+                  disabled={!findRunningJob('convert')}
+                >
+                  Stop
+                </button>
               </>
             ) : null}
 
@@ -2531,6 +2667,14 @@ function App() {
                 </button>
                 <button type="button" className="button" onClick={handleRunAudioExport} disabled={!audioSourcePath || isAudioBusy || !ffmpegReady}>
                   Run
+                </button>
+                <button
+                  type="button"
+                  className="button button-danger"
+                  onClick={() => void handleCancelJob(findRunningJob('audio'), setAudioStatus, setAudioError)}
+                  disabled={!findRunningJob('audio')}
+                >
+                  Stop
                 </button>
               </>
             ) : null}
@@ -2546,6 +2690,14 @@ function App() {
                 <button type="button" className="button" onClick={handleRunFrameExport} disabled={!frameSourcePath || isFrameBusy || !ffmpegReady}>
                   Run
                 </button>
+                <button
+                  type="button"
+                  className="button button-danger"
+                  onClick={() => void handleCancelJob(findRunningJob('frames'), setFrameStatus, setFrameError)}
+                  disabled={!findRunningJob('frames')}
+                >
+                  Stop
+                </button>
               </>
             ) : null}
 
@@ -2559,6 +2711,14 @@ function App() {
                 </button>
                 <button type="button" className="button" onClick={handleRunBatchConvert} disabled={!batchFiles.length || isBatchBusy || !ffmpegReady}>
                   Run
+                </button>
+                <button
+                  type="button"
+                  className="button button-danger"
+                  onClick={() => void handleCancelJob(findRunningJob('batch'), setBatchStatus, setBatchError)}
+                  disabled={!findRunningJob('batch')}
+                >
+                  Stop
                 </button>
               </>
             ) : null}
@@ -2574,7 +2734,6 @@ function App() {
           ? renderPlaceholder()
           : null}
 
-        {renderDropDebug()}
         {renderJobs()}
       </main>
     </div>

@@ -240,6 +240,12 @@ label span,
   font-weight: 600;
 }
 
+.button-danger {
+  border-color: rgba(255, 123, 123, 0.45);
+  background: rgba(255, 123, 123, 0.14);
+  color: #ffd7d7;
+}
+
 .panel {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -496,6 +502,39 @@ select {
   max-height: 320px;
   padding: 2px;
   overflow: auto;
+}
+
+.progress-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.progress-meta span {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.progress-track {
+  height: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #101419;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #88c0ff);
+  transition: width 180ms ease;
 }
 
 .file-row {

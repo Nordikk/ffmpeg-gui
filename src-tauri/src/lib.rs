@@ -1,9 +1,13 @@
 use rfd::FileDialog;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::env;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use tauri::{async_runtime, Builder};
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use tauri::{async_runtime, Builder, Emitter};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +40,8 @@ struct KeyframeProbe {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LosslessCutPayload {
+    job_id: String,
+    duration_seconds: Option<f64>,
     source_path: String,
     output_path: String,
     start: String,
@@ -47,6 +53,8 @@ struct LosslessCutPayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConvertPayload {
+    job_id: String,
+    duration_seconds: Option<f64>,
     source_path: String,
     output_path: String,
     video_codec: String,
@@ -66,6 +74,8 @@ struct BatchCommandResult {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AudioExportPayload {
+    job_id: String,
+    duration_seconds: Option<f64>,
     source_path: String,
     output_path: String,
     audio_codec: String,
@@ -77,6 +87,8 @@ struct AudioExportPayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FrameExportPayload {
+    job_id: String,
+    duration_seconds: Option<f64>,
     source_path: String,
     output_dir: String,
     image_format: String,
@@ -88,6 +100,7 @@ struct FrameExportPayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchConvertPayload {
+    job_id: String,
     source_paths: Vec<String>,
     container: String,
     video_codec: String,
@@ -95,6 +108,27 @@ struct BatchConvertPayload {
     video_bitrate: String,
     audio_bitrate: String,
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelJobPayload {
+    job_id: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobProgressEvent {
+    job_id: String,
+    kind: String,
+    state: String,
+    progress: f64,
+    current_time: Option<f64>,
+    total_time: Option<f64>,
+    detail: String,
+}
+
+static ACTIVE_JOBS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+static CANCELLED_JOBS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn format_output_path(input_path: &str, extension: &str, suffix: Option<&str>) -> Option<PathBuf> {
     let path = Path::new(input_path);
@@ -117,6 +151,154 @@ fn format_command_line(command: &Path, args: &[String]) -> String {
         .chain(args.iter().map(|arg| shell_quote(arg)))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn format_seconds_label(total_seconds: f64) -> String {
+    let safe_seconds = if total_seconds.is_finite() && total_seconds > 0.0 {
+        total_seconds
+    } else {
+        0.0
+    };
+    let hours = (safe_seconds / 3600.0).floor() as u64;
+    let minutes = ((safe_seconds % 3600.0) / 60.0).floor() as u64;
+    let seconds = (safe_seconds % 60.0).floor() as u64;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn active_jobs() -> &'static Mutex<HashMap<String, u32>> {
+    ACTIVE_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancelled_jobs() -> &'static Mutex<HashSet<String>> {
+    CANCELLED_JOBS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_job(job_id: &str, process_id: u32) -> Result<(), String> {
+    let mut jobs = active_jobs()
+        .lock()
+        .map_err(|_| "Could not access running job registry".to_string())?;
+    jobs.insert(job_id.to_string(), process_id);
+    Ok(())
+}
+
+fn remove_job(job_id: &str) {
+    if let Ok(mut jobs) = active_jobs().lock() {
+        jobs.remove(job_id);
+    }
+}
+
+fn mark_job_cancelled(job_id: &str) {
+    if let Ok(mut jobs) = cancelled_jobs().lock() {
+        jobs.insert(job_id.to_string());
+    }
+}
+
+fn take_job_cancelled(job_id: &str) -> bool {
+    cancelled_jobs()
+        .lock()
+        .map(|mut jobs| jobs.remove(job_id))
+        .unwrap_or(false)
+}
+
+fn clamp_progress(value: f64) -> f64 {
+    value.clamp(0.0, 1.0)
+}
+
+fn parse_ffmpeg_timestamp(value: &str) -> Option<f64> {
+    let mut parts = value.split(':');
+    let hours = parts.next()?.parse::<f64>().ok()?;
+    let minutes = parts.next()?.parse::<f64>().ok()?;
+    let seconds = parts.next()?.parse::<f64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((hours * 3600.0) + (minutes * 60.0) + seconds)
+}
+
+fn progress_seconds_from_line(key: &str, value: &str) -> Option<f64> {
+    match key {
+        "out_time" => parse_ffmpeg_timestamp(value),
+        // ffmpeg reports microseconds here despite the historical key name.
+        "out_time_us" | "out_time_ms" => value.parse::<f64>().ok().map(|raw| raw / 1_000_000.0),
+        _ => None,
+    }
+}
+
+fn emit_job_progress(
+    app: &tauri::AppHandle,
+    job_id: &str,
+    kind: &str,
+    state: &str,
+    progress: f64,
+    current_time: Option<f64>,
+    total_time: Option<f64>,
+    detail: String,
+) {
+    let _ = app.emit(
+        "job-progress",
+        JobProgressEvent {
+            job_id: job_id.to_string(),
+            kind: kind.to_string(),
+            state: state.to_string(),
+            progress: clamp_progress(progress),
+            current_time,
+            total_time,
+            detail,
+        },
+    );
+}
+
+fn build_progress_detail(label: &str, current_time: Option<f64>, total_time: Option<f64>) -> String {
+    if let Some(total) = total_time.filter(|value| *value > 0.0) {
+        let current = current_time.unwrap_or(0.0);
+        return format!(
+            "{label} {} / {}",
+            format_seconds_label(current),
+            format_seconds_label(total)
+        );
+    }
+
+    label.to_string()
+}
+
+fn terminate_process(process_id: u32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("taskkill")
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .output()
+            .map_err(|error| error.to_string())?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("Could not stop process {process_id}")
+        } else {
+            stderr
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("kill")
+            .args(["-TERM", &process_id.to_string()])
+            .output()
+            .map_err(|error| error.to_string())?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("Could not stop process {process_id}")
+        } else {
+            stderr
+        })
+    }
 }
 
 fn fallback_search_dirs() -> &'static [&'static str] {
@@ -198,7 +380,14 @@ fn resolve_binary(binary: &str) -> Result<PathBuf, String> {
 }
 
 fn build_convert_args(payload: &ConvertPayload) -> Vec<String> {
-    let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path.clone()];
+    let mut args = vec![
+        "-y".to_string(),
+        "-progress".to_string(),
+        "pipe:1".to_string(),
+        "-nostats".to_string(),
+        "-i".to_string(),
+        payload.source_path.clone(),
+    ];
 
     if payload.video_codec == "none" {
         args.push("-vn".to_string());
@@ -224,6 +413,19 @@ fn build_convert_args(payload: &ConvertPayload) -> Vec<String> {
 
     args.push(payload.output_path.clone());
     args
+}
+
+#[tauri::command]
+fn cancel_job(payload: CancelJobPayload) -> Result<(), String> {
+    let process_id = active_jobs()
+        .lock()
+        .map_err(|_| "Could not access running job registry".to_string())?
+        .get(&payload.job_id)
+        .copied()
+        .ok_or_else(|| "No running job found for this request.".to_string())?;
+
+    mark_job_cancelled(&payload.job_id);
+    terminate_process(process_id)
 }
 
 fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> {
@@ -253,6 +455,147 @@ fn run_command(command: &str, args: &[String]) -> Result<CommandResult, String> 
         format!("{command} exited with status {}", output.status)
     };
 
+    Err(format!("Command: {command_line}\n\n{details}"))
+}
+
+fn run_ffmpeg_job(
+    app: tauri::AppHandle,
+    job_id: &str,
+    kind: &'static str,
+    args: Vec<String>,
+    total_time: Option<f64>,
+    progress_offset: f64,
+    progress_scale: f64,
+    label: String,
+) -> Result<CommandResult, String> {
+    let resolved_command = resolve_binary("ffmpeg")?;
+    let command_line = format_command_line(&resolved_command, &args);
+    let mut child = Command::new(&resolved_command)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+
+    register_job(job_id, child.id())?;
+    emit_job_progress(
+        &app,
+        job_id,
+        kind,
+        "running",
+        progress_offset,
+        None,
+        total_time,
+        build_progress_detail(&label, None, total_time),
+    );
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Could not capture ffmpeg progress output".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Could not capture ffmpeg log output".to_string())?;
+
+    let progress_job_id = job_id.to_string();
+    let progress_label = label.clone();
+    let progress_app = app.clone();
+    let stdout_handle = thread::spawn(move || {
+        let mut current_time = None;
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let Some((key, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+
+            if let Some(parsed_seconds) = progress_seconds_from_line(key, value) {
+                current_time = Some(parsed_seconds);
+            }
+
+            if key != "progress" {
+                continue;
+            }
+
+            let local_progress = if value == "end" {
+                1.0
+            } else if let (Some(current), Some(total)) = (current_time, total_time.filter(|time| *time > 0.0)) {
+                clamp_progress(current / total)
+            } else {
+                0.0
+            };
+
+            emit_job_progress(
+                &progress_app,
+                &progress_job_id,
+                kind,
+                if value == "end" { "done" } else { "running" },
+                progress_offset + (local_progress * progress_scale),
+                current_time,
+                total_time,
+                build_progress_detail(&progress_label, current_time, total_time),
+            );
+        }
+    });
+
+    let stderr_handle = thread::spawn(move || {
+        let mut lines = Vec::new();
+        for line in BufReader::new(stderr).lines() {
+            if let Ok(line) = line {
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
+    });
+
+    let status = child.wait().map_err(|error| error.to_string())?;
+    remove_job(job_id);
+    let _ = stdout_handle.join();
+    let log = stderr_handle.join().unwrap_or_default();
+
+    if status.success() {
+        emit_job_progress(
+            &app,
+            job_id,
+            kind,
+            "done",
+            progress_offset + progress_scale,
+            total_time,
+            total_time,
+            build_progress_detail(&label, total_time, total_time),
+        );
+        return Ok(CommandResult {
+            command: command_line,
+            log,
+        });
+    }
+
+    if take_job_cancelled(job_id) {
+        emit_job_progress(
+            &app,
+            job_id,
+            kind,
+            "cancelled",
+            progress_offset,
+            None,
+            total_time,
+            format!("{label} cancelled"),
+        );
+        return Err("Job cancelled.".to_string());
+    }
+
+    let details = if log.trim().is_empty() {
+        format!("ffmpeg exited with status {status}")
+    } else {
+        log.trim().to_string()
+    };
     Err(format!("Command: {command_line}\n\n{details}"))
 }
 
@@ -410,9 +753,14 @@ async fn probe_keyframes(file_path: String) -> Result<KeyframeProbe, String> {
 }
 
 #[tauri::command]
-async fn run_lossless_cut(payload: LosslessCutPayload) -> Result<CommandResult, String> {
+async fn run_lossless_cut(app: tauri::AppHandle, payload: LosslessCutPayload) -> Result<CommandResult, String> {
     async_runtime::spawn_blocking(move || {
-        let mut args = vec!["-y".to_string()];
+        let mut args = vec![
+            "-y".to_string(),
+            "-progress".to_string(),
+            "pipe:1".to_string(),
+            "-nostats".to_string(),
+        ];
 
         if !payload.start.is_empty() {
             args.push("-ss".to_string());
@@ -434,24 +782,47 @@ async fn run_lossless_cut(payload: LosslessCutPayload) -> Result<CommandResult, 
             payload.output_path,
         ]);
 
-        run_command("ffmpeg", &args)
+        run_ffmpeg_job(
+            app,
+            &payload.job_id,
+            "cut",
+            args,
+            payload.duration_seconds,
+            0.0,
+            1.0,
+            "Cutting output".to_string(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn run_convert(payload: ConvertPayload) -> Result<CommandResult, String> {
-    async_runtime::spawn_blocking(move || run_command("ffmpeg", &build_convert_args(&payload)))
+async fn run_convert(app: tauri::AppHandle, payload: ConvertPayload) -> Result<CommandResult, String> {
+    async_runtime::spawn_blocking(move || {
+        run_ffmpeg_job(
+            app,
+            &payload.job_id,
+            "convert",
+            build_convert_args(&payload),
+            payload.duration_seconds,
+            0.0,
+            1.0,
+            "Converting output".to_string(),
+        )
+    })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn run_audio_export(payload: AudioExportPayload) -> Result<CommandResult, String> {
+async fn run_audio_export(app: tauri::AppHandle, payload: AudioExportPayload) -> Result<CommandResult, String> {
     async_runtime::spawn_blocking(move || {
         let mut args = vec![
             "-y".to_string(),
+            "-progress".to_string(),
+            "pipe:1".to_string(),
+            "-nostats".to_string(),
             "-i".to_string(),
             payload.source_path,
             "-vn".to_string(),
@@ -475,14 +846,23 @@ async fn run_audio_export(payload: AudioExportPayload) -> Result<CommandResult, 
         }
 
         args.push(payload.output_path);
-        run_command("ffmpeg", &args)
+        run_ffmpeg_job(
+            app,
+            &payload.job_id,
+            "audio",
+            args,
+            payload.duration_seconds,
+            0.0,
+            1.0,
+            "Exporting audio".to_string(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn run_frame_export(payload: FrameExportPayload) -> Result<CommandResult, String> {
+async fn run_frame_export(app: tauri::AppHandle, payload: FrameExportPayload) -> Result<CommandResult, String> {
     async_runtime::spawn_blocking(move || {
         std::fs::create_dir_all(&payload.output_dir).map_err(|error| error.to_string())?;
 
@@ -491,7 +871,14 @@ async fn run_frame_export(payload: FrameExportPayload) -> Result<CommandResult, 
             .to_string_lossy()
             .to_string();
 
-        let mut args = vec!["-y".to_string(), "-i".to_string(), payload.source_path];
+        let mut args = vec![
+            "-y".to_string(),
+            "-progress".to_string(),
+            "pipe:1".to_string(),
+            "-nostats".to_string(),
+            "-i".to_string(),
+            payload.source_path,
+        ];
 
         if !payload.fps.is_empty() {
             args.push("-vf".to_string());
@@ -507,32 +894,46 @@ async fn run_frame_export(payload: FrameExportPayload) -> Result<CommandResult, 
         }
 
         args.push(output_pattern);
-        run_command("ffmpeg", &args)
+        run_ffmpeg_job(
+            app,
+            &payload.job_id,
+            "frames",
+            args,
+            payload.duration_seconds,
+            0.0,
+            1.0,
+            "Exporting frames".to_string(),
+        )
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn run_batch_convert(payload: BatchConvertPayload) -> Result<BatchCommandResult, String> {
+async fn run_batch_convert(app: tauri::AppHandle, payload: BatchConvertPayload) -> Result<BatchCommandResult, String> {
     async_runtime::spawn_blocking(move || {
         if payload.source_paths.is_empty() {
             return Err("No files selected".to_string());
         }
 
+        let total_files = payload.source_paths.len() as f64;
         let mut commands = Vec::new();
         let mut outputs = Vec::new();
         let mut logs = Vec::new();
 
-        for source_path in payload.source_paths {
+        for (index, source_path) in payload.source_paths.into_iter().enumerate() {
             let output_path = format_output_path(&source_path, &payload.container, Some("_batch_convert"))
                 .ok_or_else(|| format!("Could not determine output path for {}", source_path))?
                 .to_string_lossy()
                 .to_string();
 
-            let result = run_command(
-                "ffmpeg",
-                &build_convert_args(&ConvertPayload {
+            let result = run_ffmpeg_job(
+                app.clone(),
+                &payload.job_id,
+                "batch",
+                build_convert_args(&ConvertPayload {
+                    job_id: payload.job_id.clone(),
+                    duration_seconds: None,
                     source_path: source_path.clone(),
                     output_path: output_path.clone(),
                     video_codec: payload.video_codec.clone(),
@@ -540,6 +941,10 @@ async fn run_batch_convert(payload: BatchConvertPayload) -> Result<BatchCommandR
                     video_bitrate: payload.video_bitrate.clone(),
                     audio_bitrate: payload.audio_bitrate.clone(),
                 }),
+                None,
+                (index as f64) / total_files,
+                1.0 / total_files,
+                format!("Batch file {} of {}", index + 1, total_files as usize),
             )?;
 
             commands.push(result.command);
@@ -562,6 +967,7 @@ pub fn run() {
     Builder::default()
         .invoke_handler(tauri::generate_handler![
             check_tool_status,
+            cancel_job,
             open_file,
             open_files,
             pick_folder,
