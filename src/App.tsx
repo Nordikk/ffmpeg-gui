@@ -1252,12 +1252,14 @@ function App() {
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_lossless_cut', {
-        sourcePath,
-        outputPath,
-        start,
-        end,
-        videoCodec,
-        audioCodec
+        payload: {
+          sourcePath,
+          outputPath,
+          start,
+          end,
+          videoCodec,
+          audioCodec
+        }
       });
 
       setStatus('Done');
@@ -1328,12 +1330,14 @@ function App() {
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_convert', {
-        sourcePath: convertSourcePath,
-        outputPath: convertOutputPath,
-        videoCodec: convertVideoCodec,
-        audioCodec: convertAudioCodec,
-        videoBitrate: convertVideoBitrate,
-        audioBitrate: convertAudioBitrate
+        payload: {
+          sourcePath: convertSourcePath,
+          outputPath: convertOutputPath,
+          videoCodec: convertVideoCodec,
+          audioCodec: convertAudioCodec,
+          videoBitrate: convertVideoBitrate,
+          audioBitrate: convertAudioBitrate
+        }
       });
 
       setConvertStatus('Done');
@@ -1415,12 +1419,14 @@ function App() {
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_audio_export', {
-        sourcePath: audioSourcePath,
-        outputPath: audioOutputPath,
-        audioCodec: audioCodecSetting,
-        audioBitrate: audioBitrateSetting,
-        sampleRate: audioSampleRate,
-        channels: audioChannels
+        payload: {
+          sourcePath: audioSourcePath,
+          outputPath: audioOutputPath,
+          audioCodec: audioCodecSetting,
+          audioBitrate: audioBitrateSetting,
+          sampleRate: audioSampleRate,
+          channels: audioChannels
+        }
       });
 
       setAudioStatus('Done');
@@ -1482,12 +1488,14 @@ function App() {
 
     try {
       const result = await invoke<{ command: string; log: string }>('run_frame_export', {
-        sourcePath: frameSourcePath,
-        outputDir: frameOutputDir,
-        imageFormat: frameImageFormat,
-        fps: frameFps,
-        quality: frameQuality,
-        startNumber: Number(frameStartNumber || 1)
+        payload: {
+          sourcePath: frameSourcePath,
+          outputDir: frameOutputDir,
+          imageFormat: frameImageFormat,
+          fps: frameFps,
+          quality: frameQuality,
+          startNumber: Number(frameStartNumber || 1)
+        }
       });
 
       setFrameStatus('Done');
@@ -1543,12 +1551,14 @@ function App() {
 
     try {
       const result = await invoke<{ commands: string[]; outputs: string[]; log: string }>('run_batch_convert', {
-        sourcePaths: batchFiles,
-        container: batchContainer,
-        videoCodec: batchVideoCodec,
-        audioCodec: batchAudioCodec,
-        videoBitrate: batchVideoBitrate,
-        audioBitrate: batchAudioBitrate
+        payload: {
+          sourcePaths: batchFiles,
+          container: batchContainer,
+          videoCodec: batchVideoCodec,
+          audioCodec: batchAudioCodec,
+          videoBitrate: batchVideoBitrate,
+          audioBitrate: batchAudioBitrate
+        }
       });
 
       const combinedCommands = result.commands.join('\n\n');
