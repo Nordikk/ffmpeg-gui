@@ -5,4 +5,14 @@ release/
 vite.config.js
 vite.config.d.ts
 
+# Local handoff notes
 HANDOFF.md
+AGENTS.md
+rustup-init.exe
+
+# Tauri / Rust build output
+src-tauri/target/
+
+# Local OS/editor noise
+.DS_Store
+Thumbs.db
