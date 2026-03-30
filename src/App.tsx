@@ -2578,7 +2578,7 @@ function App() {
 
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1>FFmpeg Forge</h1>
+          <h1>FFForge</h1>
         </div>
 
         <nav className="module-list" aria-label="Modules">

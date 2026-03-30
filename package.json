@@ -1,6 +1,6 @@
 {
   "name": "ffmpeggui",
-  "productName": "FFmpeg Forge",
+  "productName": "FFForge",
   "private": true,
   "version": "0.1.0",
   "description": "Desktop GUI for FFmpeg workflows such as convert, lossless cut, and batch jobs.",

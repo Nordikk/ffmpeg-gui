@@ -1,1 +1,1 @@
-{"main-capability":{"identifier":"main-capability","description":"Capability for the main FFmpeg Forge window.","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"main-capability":{"identifier":"main-capability","description":"Capability for the main FFForge window.","local":true,"windows":["main"],"permissions":["core:default"]}}

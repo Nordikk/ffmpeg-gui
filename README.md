@@ -1,4 +1,4 @@
-# FFmpeg Forge
+# FFForge
 
 Cross-platform desktop prototype for a focused all-in-one FFmpeg GUI, now migrated to Tauri.
 
